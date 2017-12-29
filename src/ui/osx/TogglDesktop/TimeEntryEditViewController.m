@@ -165,7 +165,6 @@ extern void *ctx;
 	if ([self.timeEntry.focusedFieldName isEqualToString:[NSString stringWithUTF8String:kFocusedFieldNameDuration]])
 	{
 		[self.view.window setInitialFirstResponder:self.durationTextField];
-		[self.durationTextField becomeFirstResponder];
 		return;
 	}
 	if ([self.timeEntry.focusedFieldName isEqualToString:[NSString stringWithUTF8String:kFocusedFieldNameProject]])
@@ -291,7 +290,17 @@ extern void *ctx;
 		[self.workspaceSelect becomeFirstResponder];
 		return NO;
 	}
-	uint64_t clientID = [self selectedClientID];
+
+	uint64_t clientID = 0;
+	NSString *clientGUID = 0;
+
+	ViewItem *client = [self selectedClient];
+	if (client != nil)
+	{
+		clientID = client.ID;
+		clientGUID = client.GUID;
+	}
+
 	bool_t isBillable = self.timeEntry.billable;
 
 	char *color = (char *)[[self.colorPicker getSelectedColor] UTF8String];
@@ -302,7 +311,7 @@ extern void *ctx;
 											 [self.timeEntry.GUID UTF8String],
 											 workspaceID,
 											 clientID,
-											 0,
+											 [clientGUID UTF8String],
 											 [projectName UTF8String],
 											 !is_public,
 											 color);
@@ -313,13 +322,13 @@ extern void *ctx;
 	}
 	free(project_guid);
 
-	if (projectAdded && isBillable)
-	{
-		toggl_set_time_entry_billable(ctx, [self.timeEntry.GUID UTF8String], isBillable);
-	}
-
 	if (projectAdded)
 	{
+		if (isBillable)
+		{
+			toggl_set_time_entry_billable(ctx, [self.timeEntry.GUID UTF8String], isBillable);
+		}
+
 		[self.addProjectBox setHidden:YES];
 	}
 
@@ -398,6 +407,8 @@ extern void *ctx;
 		self.descriptionComboboxPreviousStringValue = self.timeEntry.Description;
 	}
 
+	self.projectSelectPreviousStringValue = self.projectSelect.stringValue;
+
 	// Overwrite project only if user is not editing it
 	if (cmd.open || [self.projectSelect currentEditor] == nil)
 	{
@@ -442,8 +453,6 @@ extern void *ctx;
 	[self.startDate setDrawsBackground:running];
 
 	[self.endTime setHidden:!running];
-
-	[self.startEndTimeBox setHidden:self.timeEntry.durOnly];
 
 	// Overwrite tags only if user is not editing them right now
 	if (cmd.open || [self.tagsTokenField currentEditor] == nil)
@@ -490,11 +499,13 @@ extern void *ctx;
 
 	[self.tagsList enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
 		 ViewItem *tag = obj;
-		 if ([[tag.Name lowercaseString] hasPrefix:[substring lowercaseString]])
+		 if ([tag.Name rangeOfString:substring options:NSCaseInsensitiveSearch].location != NSNotFound)
 		 {
 			 [filteredCompletions addObject:tag.Name];
 		 }
 	 }];
+
+	*selectedIndex = -1;
 
 	return filteredCompletions;
 }
@@ -625,6 +636,11 @@ extern void *ctx;
 
 - (uint64_t)selectedWorkspaceID
 {
+	if (self.workspaceList.count == 1)
+	{
+		ViewItem *workspace = self.workspaceList[0];
+		return workspace.ID;
+	}
 	for (int i = 0; i < self.workspaceList.count; i++)
 	{
 		ViewItem *workspace = self.workspaceList[i];
@@ -636,17 +652,17 @@ extern void *ctx;
 	return 0;
 }
 
-- (uint64_t)selectedClientID
+- (ViewItem *)selectedClient
 {
 	for (int i = 0; i < self.workspaceClientList.count; i++)
 	{
 		ViewItem *client = self.workspaceClientList[i];
 		if ([client.Name isEqualToString:self.clientSelect.stringValue])
 		{
-			return client.ID;
+			return client;
 		}
 	}
-	return 0;
+	return nil;
 }
 
 - (void)setDragHandle:(BOOL)onLeft
@@ -855,11 +871,28 @@ extern void *ctx;
 
 	self.descriptionCombobox.stringValue = autocomplete.Description;
 	toggl_set_time_entry_description(ctx, GUID, [autocomplete.Description UTF8String]);
+
+	const char *value = [[autocomplete.tags componentsJoinedByString:@"\t"] UTF8String];
+	toggl_set_time_entry_tags(ctx, GUID, value);
+
+	bool_t isBillable = autocomplete.Billable;
+
+	if (isBillable)
+	{
+		toggl_set_time_entry_billable(ctx, GUID, isBillable);
+	}
 }
 
 - (IBAction)deleteButtonClicked:(id)sender
 {
 	NSAssert(self.timeEntry != nil, @"Time entry expected");
+
+	// If description is empty and duration is less than 15 seconds delete without confirmation
+	if (self.timeEntry.confirmlessDelete)
+	{
+		toggl_delete_time_entry(ctx, [self.timeEntry.GUID UTF8String]);
+		return;
+	}
 
 	NSAlert *alert = [[NSAlert alloc] init];
 	[alert addButtonWithTitle:@"OK"];

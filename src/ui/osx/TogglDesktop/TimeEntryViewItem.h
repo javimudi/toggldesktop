@@ -33,7 +33,6 @@
 @property (strong) NSArray *tags;
 @property (strong) NSDate *updatedAt;
 @property (strong) NSString *formattedDate;
-@property BOOL durOnly;
 // If this is set to YES, a date header is displayed on top of
 // the time entry cell in the time entry list view:
 @property BOOL isHeader;
@@ -46,4 +45,19 @@
 @property BOOL CanAddProjects;
 @property (strong) NSString *WorkspaceName;
 @property (strong) NSString *Error;
+// if the item is load more row
+@property BOOL loadMore;
+// if item can be deleted without confirm
+@property BOOL confirmlessDelete;
+// Grouped Mode attributes
+// If entry is group header
+@property BOOL Group;
+// Group Open state
+@property BOOL GroupOpen;
+// Group Name
+@property (strong) NSString *GroupName;
+// Group Duration
+@property (strong) NSString *GroupDuration;
+// Group Item Count
+@property uint64_t GroupItemCount;
 @end

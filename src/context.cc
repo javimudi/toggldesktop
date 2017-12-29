@@ -55,6 +55,7 @@
 #include "Poco/URIStreamOpener.h"
 #include "Poco/Util/TimerTask.h"
 #include "Poco/Util/TimerTaskAdapter.h"
+#include <mutex> // NOLINT
 
 namespace toggl {
 
@@ -76,10 +77,13 @@ Context::Context(const std::string app_name, const std::string app_version)
 , last_sync_started_(0)
 , sync_interval_seconds_(0)
 , update_check_disabled_(false)
+, had_something_to_push_(false)
 , quit_(false)
 , ui_updater_(this, &Context::uiUpdaterActivity)
 , reminder_(this, &Context::reminderActivity)
-, update_path_("") {
+, syncer_(this, &Context::syncerActivity)
+, update_path_("")
+, ws_missing_(false) {
     if (!Poco::URIStreamOpener::defaultOpener().supportsScheme("http")) {
         Poco::Net::HTTPStreamFactory::registerFactory();
     }
@@ -111,6 +115,7 @@ Context::Context(const std::string app_name, const std::string app_version)
     }
 
     last_tracking_reminder_time_ = time(0);
+    pomodoro_break_entry_ = nullptr;
 }
 
 Context::~Context() {
@@ -154,20 +159,37 @@ Context::~Context() {
 }
 
 void Context::stopActivities() {
-    {
-        Poco::Mutex::ScopedLock lock(reminder_m_);
-        if (reminder_.isRunning()) {
-            reminder_.stop();
-            reminder_.wait();
+    try {
+        {
+            Poco::Mutex::ScopedLock lock(reminder_m_);
+            if (reminder_.isRunning()) {
+                reminder_.stop();
+                reminder_.wait(2000);
+            }
         }
-    }
 
-    {
-        Poco::Mutex::ScopedLock lock(ui_updater_m_);
-        if (ui_updater_.isRunning()) {
-            ui_updater_.stop();
-            ui_updater_.wait();
+        {
+            Poco::Mutex::ScopedLock lock(ui_updater_m_);
+            if (ui_updater_.isRunning()) {
+                ui_updater_.stop();
+                ui_updater_.wait(2000);
+            }
         }
+
+
+        {
+            Poco::Mutex::ScopedLock lock(syncer_m_);
+            if (syncer_.isRunning()) {
+                syncer_.stop();
+                syncer_.wait(2000);
+            }
+        }
+    } catch(const Poco::Exception& exc) {
+        logger().debug(exc.displayText());
+    } catch(const std::exception& ex) {
+        logger().debug(ex.what());
+    } catch(const std::string& ex) {
+        logger().debug(ex);
     }
 
     {
@@ -198,10 +220,10 @@ void Context::Shutdown() {
     // cancel tasks but allow them finish
     {
         Poco::Mutex::ScopedLock lock(timer_m_);
-        timer_.cancel(true);
+        timer_.cancel(false);
     }
 
-    // Stops all running threads and waits for their completion.
+    // Stops all running threads and waits for their completion (maximum 10 seconds).
     Poco::ThreadPool::defaultPool().stopAll();
 }
 
@@ -247,6 +269,10 @@ error Context::StartEvents() {
             return noError;
         }
         setUser(user);
+
+        // Set since param to 0 to force full sync on app start
+        user->SetSince(0);
+        logger().debug("fullSyncOnAppStart");
 
         updateUI(UIElements::Reset());
 
@@ -532,6 +558,9 @@ void Context::updateUI(const UIElements &what) {
                     user_->CanSeeBillable(ws);
                 editor_time_entry_view.DefaultWID = user_->DefaultWID();
 
+                editor_time_entry_view.Locked = isTimeEntryLocked(
+                    editor_time_entry);
+
                 // Display tags also when time entry is being edited,
                 // because tags are filtered by TE WID
                 std::vector<std::string> tags;
@@ -627,35 +656,131 @@ void Context::updateUI(const UIElements &what) {
 
             // Collect the time entries into a list
             std::map<std::string, Poco::Int64> date_durations;
+
+            // Group data maps
+            std::map<std::string, Poco::Int64> group_durations;
+            std::map<std::string, Poco::Int64> group_header_id;
+            std::map<std::string, std::vector<Poco::Int64> > group_items;
+
             for (unsigned int i = 0; i < time_entries.size(); i++) {
                 TimeEntry *te = time_entries[i];
-                view::TimeEntry view;
-                view.Fill(te);
+
+                std::string date_header = toggl::Formatter::FormatDateHeader(te->Start());
+
                 // Calculate total duration for each date:
                 // will be displayed in date header
-                Poco::Int64 duration = date_durations[view.DateHeader];
+                Poco::Int64 duration = date_durations[date_header];
                 duration += Formatter::AbsDuration(te->Duration());
-                date_durations[view.DateHeader] = duration;
+                date_durations[date_header] = duration;
+
                 // Dont render running entry in list,
                 // although its calculated into totals per date.
                 if (te->Duration() < 0) {
                     // Don't display running entries
                     continue;
                 }
+
+                // Calculate total duration of group
+                if (user_->CollapseEntries()) {
+                    std::stringstream ss;
+                    ss << date_header << te->Description()
+                       << te->PID() << te->TID() << te->Billable() << te->Tags();
+                    std::string group_name = ss.str();
+
+                    group_header_id[group_name] = i;
+                    duration = group_durations[group_name];
+                    duration += Formatter::AbsDuration(te->Duration());
+                    group_durations[group_name] = duration;
+                    group_items[group_name].push_back(i);
+
+                }
+            }
+
+            // Assign the date durations we calculated previously
+            for (unsigned int i = 0; i < time_entries.size(); i++) {
+                TimeEntry *te = time_entries[i];
+
+                // Dont render running entry in list,
+                // although its calculated into totals per date.
+                if (te->Duration() < 0) {
+                    // Don't display running entries
+                    continue;
+                }
+
+                view::TimeEntry view;
+                view.Fill(te);
+
+                // Assign group info
+                if (user_->CollapseEntries()) {
+
+                    if (group_items[view.GroupName].size() > 1) {
+
+                        if (group_header_id[view.GroupName] == i) {
+                            // If Group open add all entries in group
+                            if(entry_groups[view.GroupName]) {
+
+                                for (unsigned int j = 0; j < group_items[view.GroupName].size(); j++) {
+                                    TimeEntry *group_entry = time_entries[group_items[view.GroupName][j]];
+
+                                    view::TimeEntry group_entry_view;
+                                    group_entry_view.Fill(group_entry);
+
+                                    group_entry_view.GroupOpen = entry_groups[view.GroupName];
+
+                                    user_->related.ProjectLabelAndColorCode(
+                                        group_entry,
+                                        &group_entry_view);
+
+                                    group_entry_view.Locked = isTimeEntryLocked(group_entry);
+
+                                    group_entry_view.Duration = toggl::Formatter::FormatDuration(
+                                        group_entry_view.DurationInSeconds,
+                                        Formatter::DurationFormat);
+                                    group_entry_view.DateDuration =
+                                        Formatter::FormatDurationForDateHeader(
+                                            date_durations[group_entry_view.DateHeader]);
+                                    group_entry_view.GroupItemCount = entry_groups[group_entry_view.GroupName];
+                                    time_entry_views.push_back(group_entry_view);
+                                }
+                            }
+
+                            // Add Group header
+                            view::TimeEntry group_view;
+                            group_view.Fill(te);
+                            user_->related.ProjectLabelAndColorCode(
+                                te,
+                                &group_view);
+                            group_view.Group = true;
+                            group_view.GroupOpen = entry_groups[group_view.GroupName];
+                            group_view.Duration =
+                                Formatter::FormatDuration(
+                                    group_durations[view.GroupName],
+                                    Formatter::DurationFormat);
+                            group_view.DateDuration =
+                                Formatter::FormatDurationForDateHeader(
+                                    date_durations[view.DateHeader]);
+                            group_view.GroupItemCount = group_items[group_view.GroupName].size();
+                            time_entry_views.push_back(group_view);
+                        }
+                        continue;
+                    }
+                    view.GroupItemCount = 1;
+                }
                 user_->related.ProjectLabelAndColorCode(
                     te,
                     &view);
-                time_entry_views.push_back(view);
-            }
-            // Assign the date durations we calculated previously
-            for (unsigned int i = 0; i < time_entry_views.size(); i++) {
-                view::TimeEntry &view = time_entry_views[i];
+
+                view.Locked = isTimeEntryLocked(te);
+                view.GroupOpen = false;
+
                 view.Duration = toggl::Formatter::FormatDuration(
                     view.DurationInSeconds,
                     Formatter::DurationFormat);
                 view.DateDuration =
                     Formatter::FormatDurationForDateHeader(
                         date_durations[view.DateHeader]);
+                time_entry_views.push_back(view);
+
             }
         }
 
@@ -678,7 +803,6 @@ void Context::updateUI(const UIElements &what) {
             idle_.SetSettings(settings_);
 
             HTTPSClient::Config.UseProxy = use_proxy;
-            HTTPSClient::Config.IgnoreCert = false;
             HTTPSClient::Config.ProxySettings = proxy;
             HTTPSClient::Config.AutodetectProxy = settings_.autodetect_proxy;
         }
@@ -735,7 +859,8 @@ void Context::updateUI(const UIElements &what) {
     if (what.display_time_entries) {
         UI()->DisplayTimeEntryList(
             what.open_time_entry_list,
-            time_entry_views);
+            time_entry_views,
+            !user_->HasLoadedMore());
         last_time_entry_list_render_at_ = Poco::LocalDateTime();
     }
 
@@ -829,6 +954,14 @@ error Context::displayError(const error err) {
     if (err.find(kUnsupportedAppError) != std::string::npos) {
         urls::SetImATeapot(true);
     }
+
+    // Check for missing WS error and
+    if (err.find(kMissingWS) != std::string::npos) {
+        ws_missing_ = true;
+        UI()->DisplayWSError();
+        return noError;
+    }
+
     return UI()->DisplayError(err);
 }
 
@@ -862,6 +995,11 @@ void Context::scheduleSync() {
     Sync();
 }
 
+void Context::FullSync() {
+    user_->SetSince(0);
+    Sync();
+}
+
 void Context::Sync() {
     logger().debug("Sync");
 
@@ -891,6 +1029,11 @@ void Context::onSync(Poco::Util::TimerTask& task) {  // NOLINT
     }
     logger().debug("onFullSync executing");
 
+    if (!user_) {
+        return;
+    }
+
+    ws_missing_ = false;
     last_sync_started_ = time(0);
 
     TogglClient client(UI());
@@ -902,14 +1045,20 @@ void Context::onSync(Poco::Util::TimerTask& task) {  // NOLINT
 
     setOnline("Data pulled");
 
-    bool had_something_to_push(true);
-    err = pushChanges(&client, &had_something_to_push);
-    if (err != noError) {
-        displayError(err);
-    }
-
-    if (err != noError && had_something_to_push) {
-        setOnline("Data pushed");
+    if(user_->related.NumberOfUnsyncedTimeEntries() < 10) {
+        bool something_to_push(true);
+        err = pushChanges(&client, &something_to_push);
+        if (err != noError) {
+            displayError(err);
+        } else if (something_to_push) {
+            setOnline("Changes pushed");
+        }
+    } else {
+        // Sync asyncronously with syncerActivity if there is a lot of unsynced data
+        had_something_to_push_ = true;
+        if (!syncer_.isRunning()) {
+            syncer_.start();
+        }
     }
 
     // Push cached OBM action
@@ -941,15 +1090,25 @@ void Context::onPushChanges(Poco::Util::TimerTask& task) {  // NOLINT
         logger().debug("onPushChanges postponed");
         return;
     }
-    logger().debug("onPushChanges executing");
 
-    TogglClient client(UI());
-    bool had_something_to_push(true);
-    error err = pushChanges(&client, &had_something_to_push);
-    if (err != noError) {
-        displayError(err);
-    } else if (had_something_to_push) {
-        setOnline("Changes pushed");
+    if (!user_) {
+        logger().debug("onPushChanges cancelled, user not logged in");
+        return;
+    }
+    logger().debug("onPushChanges executing");
+    error err;
+    if(user_->related.NumberOfUnsyncedTimeEntries() < 10) {
+        TogglClient client(UI());
+        bool something_to_push(true);
+        err = pushChanges(&client, &something_to_push);
+        if (err != noError) {
+            displayError(err);
+        } else if (something_to_push) {
+            setOnline("Changes pushed");
+        }
+    } else {
+        // Sync asyncronously with syncerActivity if there is a lot of unsynced data
+        had_something_to_push_ = true;
     }
 
     // Push cached OBM action
@@ -990,9 +1149,18 @@ error Context::LoadUpdateFromJSONString(const std::string json) {
         return noError;
     }
 
+    TimeEntry *running_entry = user_->RunningTimeEntry();
+
     error err = user_->LoadUserUpdateFromJSONString(json);
     if (err != noError) {
         return displayError(err);
+    }
+
+    TimeEntry *new_running_entry = user_->RunningTimeEntry();
+
+    // Reset reminder time when entry stopped by websocket
+    if (running_entry && !new_running_entry) {
+        last_tracking_reminder_time_ = time(0);
     }
 
     return displayError(save());
@@ -1183,6 +1351,10 @@ error Context::UpdateChannel(
     poco_check_ptr(update_channel);
 
     error err = db()->LoadUpdateChannel(update_channel);
+
+    if (err.find(kDatabaseDiskMalformed) != std::string::npos) {
+        err = noError;
+    }
     return displayError(err);
 }
 
@@ -1350,6 +1522,7 @@ error Context::updateURL(std::string *result) {
         return error("Cannot check for updates without app version");
     }
 
+    // Not implemented in v9 as of 12.05.2017
     std::stringstream relative_url;
     relative_url << "/api/v8/updates?app=td"
                  << "&channel=" << update_channel
@@ -1429,6 +1602,7 @@ void Context::onTimelineUpdateServerSettings(Poco::Util::TimerTask& task) {  // 
         apitoken = user_->APIToken();
     }
 
+    // Not implemented in v9 as of 12.05.2017
     HTTPSRequest req;
     req.host = urls::TimelineUpload();
     req.relative_url = "/api/v8/timeline_settings";
@@ -1488,6 +1662,7 @@ void Context::onSendFeedback(Poco::Util::TimerTask& task) {  // NOLINT
     UpdateChannel(&update_channel);
 
     Poco::Net::HTMLForm form;
+    Json::Value settings_json;
 
     form.setEncoding(Poco::Net::HTMLForm::ENCODING_MULTIPART);
 
@@ -1506,12 +1681,18 @@ void Context::onSendFeedback(Poco::Util::TimerTask& task) {  // NOLINT
     form.addPart("files",
                  new Poco::Net::FilePartSource(log_path_));
 
+    settings_json = settings_.SaveToJSON();
+    if (user_) {
+        settings_json["record_timeline"] = user_->RecordTimeline();
+    }
+
     form.addPart("files",
                  new Poco::Net::StringPartSource(
-                     Json::StyledWriter().write(settings_.SaveToJSON()),
+                     Json::StyledWriter().write(settings_json),
                      "application/json",
                      "settings.json"));
 
+    // Not implemented in v9 as of 12.05.2017
     HTTPSRequest req;
     req.host = urls::API();
     req.relative_url ="/api/v8/feedback/web";
@@ -1616,6 +1797,11 @@ error Context::SetSettingsPomodoro(const bool pomodoro) {
         db()->SetSettingsPomodoro(pomodoro));
 }
 
+error Context::SetSettingsPomodoroBreak(const bool pomodoro_break) {
+    return applySettingsSaveResultToUI(
+        db()->SetSettingsPomodoroBreak(pomodoro_break));
+}
+
 error Context::SetSettingsIdleMinutes(const Poco::UInt64 idle_minutes) {
     return applySettingsSaveResultToUI(
         db()->SetSettingsIdleMinutes(idle_minutes));
@@ -1639,6 +1825,12 @@ error Context::SetSettingsReminderMinutes(const Poco::UInt64 reminder_minutes) {
 error Context::SetSettingsPomodoroMinutes(const Poco::UInt64 pomodoro_minutes) {
     return applySettingsSaveResultToUI(
         db()->SetSettingsPomodoroMinutes(pomodoro_minutes));
+}
+
+error Context::SetSettingsPomodoroBreakMinutes(
+    const Poco::UInt64 pomodoro_break_minutes) {
+    return applySettingsSaveResultToUI(
+        db()->SetSettingsPomodoroBreakMinutes(pomodoro_break_minutes));
 }
 
 error Context::LoadWindowSettings(
@@ -1673,6 +1865,36 @@ error Context::SaveWindowSettings(
     return displayError(err);
 }
 
+Poco::Int64 Context::GetMiniTimerX() {
+    Poco::Int64 value(0);
+    displayError(db()->GetMiniTimerX(&value));
+    return value;
+}
+
+void Context::SetMiniTimerX(const int64_t x) {
+    displayError(db()->SetMiniTimerX(x));
+}
+
+Poco::Int64 Context::GetMiniTimerY() {
+    Poco::Int64 value(0);
+    displayError(db()->GetMiniTimerY(&value));
+    return value;
+}
+
+void Context::SetMiniTimerY(const int64_t y) {
+    displayError(db()->SetMiniTimerY(y));
+}
+
+Poco::Int64 Context::GetMiniTimerW() {
+    Poco::Int64 value(0);
+    displayError(db()->GetMiniTimerW(&value));
+    return value;
+}
+
+void Context::SetMiniTimerW(const int64_t y) {
+    displayError(db()->SetMiniTimerW(y));
+}
+
 void Context::SetCompactMode(
     const bool value) {
     displayError(db()->SetCompactMode(value));
@@ -1681,6 +1903,17 @@ void Context::SetCompactMode(
 bool Context::GetCompactMode() {
     bool value(false);
     displayError(db()->GetCompactMode(&value));
+    return value;
+}
+
+void Context::SetMiniTimerVisible(
+    const bool value) {
+    displayError(db()->SetMiniTimerVisible(value));
+}
+
+bool Context::GetMiniTimerVisible() {
+    bool value(false);
+    displayError(db()->GetMiniTimerVisible(&value));
     return value;
 }
 
@@ -1861,6 +2094,7 @@ void Context::SetEnvironment(const std::string value) {
     logger().debug("SetEnvironment " + value);
     environment_ = value;
 
+    HTTPSClient::Config.IgnoreCert = ("development" == environment_);
     urls::SetRequestsAllowed("test" != environment_);
 }
 
@@ -1950,6 +2184,16 @@ error Context::Login(
         }
 
         err = SetLoggedInUserFromJSON(json);
+        if (err != noError) {
+            return displayError(err);
+        }
+
+        err = pullWorkspacePreferences(&client);
+        if (err != noError) {
+            return displayError(err);
+        }
+
+        err = pullUserPreferences(&client);
         if (err != noError) {
             return displayError(err);
         }
@@ -2178,6 +2422,12 @@ error Context::ClearCache() {
     try {
         error err = noError;
 
+        err = db()->ResetWindow();
+
+        if (err != noError) {
+            return displayError(err);
+        }
+
         {
             Poco::Mutex::ScopedLock lock(user_m_);
             if (!user_) {
@@ -2208,13 +2458,19 @@ TimeEntry *Context::Start(
     const Poco::UInt64 task_id,
     const Poco::UInt64 project_id,
     const std::string project_guid,
-    const std::string tags) {
+    const std::string tags,
+    const bool prevent_on_app) {
 
     // Do not even allow to add new time entries,
     // else they will linger around in the app
     // and the user can continue using the unsupported app.
     if (urls::ImATeapot()) {
         displayError(kUnsupportedAppError);
+        return nullptr;
+    }
+
+    // Discard Start if WS missing error is present
+    if (ws_missing_) {
         return nullptr;
     }
 
@@ -2227,16 +2483,14 @@ TimeEntry *Context::Start(
             return nullptr;
         }
 
-        // Check if there's a default TID set
         Poco::UInt64 tid(task_id);
-        if (!tid) {
-            tid = user_->DefaultTID();
-        }
 
         // Check if there's a default PID set
         Poco::UInt64 pid(project_id);
         if (!pid && project_guid.empty()) {
             pid = user_->DefaultPID();
+            // Check if there's a default TID set
+            tid = user_->DefaultTID();
         }
 
         te = user_->Start(description,
@@ -2245,8 +2499,6 @@ TimeEntry *Context::Start(
                           pid,
                           project_guid,
                           tags);
-
-        last_pomodoro_reminder_time_ = time(0);
     }
 
     error err = save();
@@ -2262,13 +2514,13 @@ TimeEntry *Context::Start(
 
     OpenTimeEntryList();
 
-    if (settings_.focus_on_shortcut) {
+    if (!prevent_on_app && settings_.focus_on_shortcut) {
         // Show app
         UI()->DisplayApp();
     }
 
     if (te && settings_.open_editor_on_shortcut) {
-        if (!settings_.focus_on_shortcut) {
+        if (!prevent_on_app && !settings_.focus_on_shortcut) {
             // Show app
             UI()->DisplayApp();
         }
@@ -2330,12 +2582,17 @@ void Context::OpenTimeEntryEditor(
     updateUI(render);
 }
 
-TimeEntry *Context::ContinueLatest() {
+TimeEntry *Context::ContinueLatest(const bool prevent_on_app) {
     // Do not even allow to continue entries,
     // else they will linger around in the app
     // and the user can continue using the unsupported app.
     if (urls::ImATeapot()) {
         displayError(kUnsupportedAppError);
+        return nullptr;
+    }
+
+    // Discard Start if WS missing error is present
+    if (ws_missing_) {
         return nullptr;
     }
 
@@ -2357,8 +2614,6 @@ TimeEntry *Context::ContinueLatest() {
         result = user_->Continue(
             latest->GUID(),
             settings_.manual_mode);
-
-        last_pomodoro_reminder_time_ = time(0);
     }
 
 
@@ -2377,13 +2632,13 @@ TimeEntry *Context::ContinueLatest() {
         updateUI(render);
     }
 
-    if (settings_.focus_on_shortcut) {
+    if (!prevent_on_app && settings_.focus_on_shortcut) {
         // Show app
         UI()->DisplayApp();
     }
 
     if (result && settings_.open_editor_on_shortcut) {
-        if (!settings_.focus_on_shortcut) {
+        if (!prevent_on_app && !settings_.focus_on_shortcut) {
             // Show app
             UI()->DisplayApp();
         }
@@ -2405,6 +2660,11 @@ TimeEntry *Context::Continue(
         return nullptr;
     }
 
+    // Discard Start if WS missing error is present
+    if (ws_missing_) {
+        return nullptr;
+    }
+
     if (GUID.empty()) {
         displayError("Missing GUID");
         return nullptr;
@@ -2422,8 +2682,6 @@ TimeEntry *Context::Continue(
         result = user_->Continue(
             GUID,
             settings_.manual_mode);
-
-        last_pomodoro_reminder_time_ = time(0);
     }
 
     error err = save();
@@ -2466,17 +2724,23 @@ error Context::DeleteTimeEntryByGUID(const std::string GUID) {
             return noError;
         }
         te = user_->related.TimeEntryByGUID(GUID);
+
+        if (!te) {
+            logger().warning("Time entry not found: " + GUID);
+            return noError;
+        }
+
+        if (te->DeletedAt()) {
+            return displayError(kCannotDeleteDeletedTimeEntry);
+        }
+
+        if (isTimeEntryLocked(te)) {
+            return logAndDisplayUserTriedEditingLockedEntry();
+        }
     }
 
-    if (!te) {
-        logger().warning("Time entry not found: " + GUID);
-        return noError;
-    }
-    if (te->DeletedAt()) {
-        return displayError(kCannotDeleteDeletedTimeEntry);
-    }
     if (te->IsTracking()) {
-        error err = Stop();
+        error err = Stop(false);
         if (err != noError) {
             return displayError(err);
         }
@@ -2503,9 +2767,12 @@ error Context::SetTimeEntryDuration(
         logger().warning("Time entry not found: " + GUID);
         return noError;
     }
-    te->SetDurationUserInput(duration);
 
-    last_pomodoro_reminder_time_ = te->Start();
+    if (isTimeEntryLocked(te)) {
+        return logAndDisplayUserTriedEditingLockedEntry();
+    }
+
+    te->SetDurationUserInput(duration);
     return displayError(save());
 }
 
@@ -2531,12 +2798,21 @@ error Context::SetTimeEntryProject(
             return noError;
         }
 
+        if (isTimeEntryLocked(te)) {
+            return logAndDisplayUserTriedEditingLockedEntry();
+        }
+
         Project *p = nullptr;
         if (project_id) {
             p = user_->related.ProjectByID(project_id);
         }
         if (!project_guid.empty()) {
             p = user_->related.ProjectByGUID(project_guid);
+        }
+
+        if (p && !canChangeProjectTo(te, p)) {
+            return displayError(error(
+                "Cannot change project: would end up with locked time entry"));
         }
 
         if (p) {
@@ -2574,7 +2850,8 @@ error Context::SetTimeEntryDate(
         return displayError("Missing GUID");
     }
 
-    TimeEntry *te = nullptr;
+    TimeEntry *te;
+    Poco::LocalDateTime dt;
 
     {
         Poco::Mutex::ScopedLock lock(user_m_);
@@ -2583,25 +2860,32 @@ error Context::SetTimeEntryDate(
             return noError;
         }
         te = user_->related.TimeEntryByGUID(GUID);
+
+        if (!te) {
+            logger().warning("Time entry not found: " + GUID);
+            return noError;
+        }
+
+        if (isTimeEntryLocked(te)) {
+            return displayError(error("Cannot change locked time entry."));
+        }
+
+        Poco::LocalDateTime date_part(
+            Poco::Timestamp::fromEpochTime(unix_timestamp));
+
+        Poco::LocalDateTime time_part(
+            Poco::Timestamp::fromEpochTime(te->Start()));
+
+        dt = Poco::LocalDateTime(
+            date_part.year(), date_part.month(), date_part.day(),
+            time_part.hour(), time_part.minute(), time_part.second());
+
+        if (!canChangeStartTimeTo(te, dt.timestamp().epochTime())) {
+            return displayError(
+                error(
+                    "Failed to change time entry date: workspace is locked."));
+        }
     }
-
-    if (!te) {
-        logger().warning("Time entry not found: " + GUID);
-        return noError;
-    }
-
-    Poco::LocalDateTime loco(
-        Poco::Timestamp::fromEpochTime(unix_timestamp));
-
-    Poco::LocalDateTime date_part(
-        Poco::Timestamp::fromEpochTime(unix_timestamp));
-
-    Poco::LocalDateTime time_part(
-        Poco::Timestamp::fromEpochTime(te->Start()));
-
-    Poco::LocalDateTime dt(
-        date_part.year(), date_part.month(), date_part.day(),
-        time_part.hour(), time_part.minute(), time_part.second());
 
     std::string s = Poco::DateTimeFormatter::format(
         dt,
@@ -2611,6 +2895,7 @@ error Context::SetTimeEntryDate(
 
     return displayError(save());
 }
+
 
 error Context::SetTimeEntryStart(
     const std::string GUID,
@@ -2628,11 +2913,15 @@ error Context::SetTimeEntryStart(
             return noError;
         }
         te = user_->related.TimeEntryByGUID(GUID);
-    }
 
-    if (!te) {
-        logger().warning("Time entry not found: " + GUID);
-        return noError;
+        if (!te) {
+            logger().warning("Time entry not found: " + GUID);
+            return noError;
+        }
+
+        if (isTimeEntryLocked(te)) {
+            return logAndDisplayUserTriedEditingLockedEntry();
+        }
     }
 
     Poco::LocalDateTime local(Poco::Timestamp::fromEpochTime(te->Start()));
@@ -2651,7 +2940,6 @@ error Context::SetTimeEntryStart(
 
     te->SetStartUserInput(s, GetKeepEndTimeFixed());
 
-    last_pomodoro_reminder_time_ = te->Start();
     return displayError(save());
 }
 
@@ -2671,11 +2959,15 @@ error Context::SetTimeEntryStop(
             return noError;
         }
         te = user_->related.TimeEntryByGUID(GUID);
-    }
 
-    if (!te) {
-        logger().warning("Time entry not found: " + GUID);
-        return noError;
+        if (!te) {
+            logger().warning("Time entry not found: " + GUID);
+            return noError;
+        }
+
+        if (isTimeEntryLocked(te)) {
+            return logAndDisplayUserTriedEditingLockedEntry();
+        }
     }
 
     Poco::LocalDateTime stop(
@@ -2730,12 +3022,17 @@ error Context::SetTimeEntryTags(
             return noError;
         }
         te = user_->related.TimeEntryByGUID(GUID);
+
+        if (!te) {
+            logger().warning("Time entry not found: " + GUID);
+            return noError;
+        }
+
+        if (isTimeEntryLocked(te)) {
+            return logAndDisplayUserTriedEditingLockedEntry();
+        }
     }
 
-    if (!te) {
-        logger().warning("Time entry not found: " + GUID);
-        return noError;
-    }
     te->SetTags(value);
 
     if (te->Dirty()) {
@@ -2762,12 +3059,17 @@ error Context::SetTimeEntryBillable(
             return noError;
         }
         te = user_->related.TimeEntryByGUID(GUID);
+
+        if (!te) {
+            logger().warning("Time entry not found: " + GUID);
+            return noError;
+        }
+
+        if (isTimeEntryLocked(te)) {
+            return logAndDisplayUserTriedEditingLockedEntry();
+        }
     }
 
-    if (!te) {
-        logger().warning("Time entry not found: " + GUID);
-        return noError;
-    }
     te->SetBillable(value);
 
     if (te->Dirty()) {
@@ -2794,12 +3096,17 @@ error Context::SetTimeEntryDescription(
             return noError;
         }
         te = user_->related.TimeEntryByGUID(GUID);
+
+        if (!te) {
+            logger().warning("Time entry not found: " + GUID);
+            return noError;
+        }
+
+        if (isTimeEntryLocked(te)) {
+            return logAndDisplayUserTriedEditingLockedEntry();
+        }
     }
 
-    if (!te) {
-        logger().warning("Time entry not found: " + GUID);
-        return noError;
-    }
     te->SetDescription(value);
 
     if (te->Dirty()) {
@@ -2810,7 +3117,7 @@ error Context::SetTimeEntryDescription(
     return displayError(save());
 }
 
-error Context::Stop() {
+error Context::Stop(const bool prevent_on_app) {
     std::vector<TimeEntry *> stopped;
 
     {
@@ -2829,7 +3136,7 @@ error Context::Stop() {
         return noError;
     }
 
-    if (settings_.focus_on_shortcut) {
+    if (!prevent_on_app && settings_.focus_on_shortcut) {
         UI()->DisplayApp();
     }
 
@@ -3243,20 +3550,34 @@ Project *Context::CreateProject(
             user_->related.Projects.begin();
                 it != user_->related.Projects.end(); it++) {
             Project *p = *it;
-            if ((p->Name() == trimmed_project_name)
-                    && (workspace_id == p->WID())
-                    && (client_id == p->CID())) {
+
+            auto clientIsSame = client_guid == p->ClientGUID();
+            if (client_id != 0 && p->CID() != 0) {
+                clientIsSame = clientIsSame || client_id == p->CID();
+            }
+
+            if (clientIsSame && p->Name() == trimmed_project_name) {
                 displayError(kProjectNameAlreadyExists);
                 return nullptr;
             }
         }
+        // Check if projects are billable by default
+        Workspace *ws = nullptr;
+        bool billable = false;
+
+        ws = user_->related.WorkspaceByID(workspace_id);
+        if (ws) {
+            billable = ws->ProjectsBillableByDefault();
+        }
+
         result = user_->CreateProject(
             workspace_id,
             client_id,
             client_guid,
             trimmed_project_name,
             is_private,
-            project_color);
+            project_color,
+            billable);
     }
 
     err = save();
@@ -3341,7 +3662,7 @@ Client *Context::CreateClient(
             user_->related.Clients.begin();
                 it != user_->related.Clients.end(); it++) {
             Client *c = *it;
-            if (c->Name() == trimmed_client_name) {
+            if (c->WID() == workspace_id && c->Name() == trimmed_client_name) {
                 displayError(kClientNameAlreadyExists);
                 return nullptr;
             }
@@ -3381,6 +3702,7 @@ error Context::OpenReportsInBrowser() {
         apitoken = user_->APIToken();
     }
 
+    // Not implemented in v9 as of 12.05.2017
     HTTPSRequest req;
     req.host = urls::API();
     req.relative_url = "/api/v8/desktop_login_tokens";
@@ -3407,6 +3729,7 @@ error Context::OpenReportsInBrowser() {
         return displayError("Could not extract login token from JSON");
     }
 
+    // Not implemented in v9 as of 12.05.2017
     std::stringstream ss;
     ss  << urls::API() << "/api/v8/desktop_login"
         << "?login_token=" << login_token
@@ -3662,24 +3985,86 @@ void Context::displayPomodoro() {
         return;
     }
 
+    Poco::UInt64 wid(0);
+
     {
         Poco::Mutex::ScopedLock lock(user_m_);
         if (!user_) {
             return;
         }
-        if (!user_->RunningTimeEntry()) {
+
+        TimeEntry *current_te = user_->RunningTimeEntry();
+        if (!current_te) {
+            return;
+        }
+        if (pomodoro_break_entry_ != nullptr
+                && current_te->GUID().compare(
+                    pomodoro_break_entry_->GUID()) == 0) {
             return;
         }
 
-        if (time(0) - last_pomodoro_reminder_time_
-                < settings_.pomodoro_minutes * 60) {
-            return;
+        if (current_te->DurOnly() && current_te->LastStartAt() != 0) {
+            if (time(0) - current_te->LastStartAt()
+                    < settings_.pomodoro_minutes * 60) {
+                return;
+            }
+        } else {
+            if (time(0) - current_te->Start()
+                    < settings_.pomodoro_minutes * 60) {
+                return;
+            }
         }
 
-        last_pomodoro_reminder_time_ = time(0);
+        wid = current_te->WID();
+    }
+    Stop(true);
+    UI()->DisplayPomodoro(settings_.pomodoro_minutes);
+
+    if (settings_.pomodoro_break) {
+        //  Start a new task with the tag "pomodoro-break"
+        pomodoro_break_entry_ = user_->Start("Pomodoro Break",  // description
+                                             "",  // duration
+                                             0,  // task_id
+                                             0,  // project_id
+                                             "",  // project_guid
+                                             "pomodoro-break");  // tags
+
+        // Set workspace id to same as the previous entry
+        pomodoro_break_entry_->SetWID(wid);
+    }
+}
+
+void Context::displayPomodoroBreak() {
+    if (!settings_.pomodoro_break) {
+        return;
     }
 
-    UI()->DisplayPomodoro(settings_.pomodoro_minutes);
+    {
+        Poco::Mutex::ScopedLock lock(user_m_);
+        if (!user_) {
+            return;
+        }
+
+        TimeEntry *current_te = user_->RunningTimeEntry();
+
+        if (!current_te) {
+            return;
+        }
+
+        if (pomodoro_break_entry_ == nullptr
+                || current_te->GUID().compare(
+                    pomodoro_break_entry_->GUID()) != 0) {
+            return;
+        }
+
+        if (time(0) - current_te->Start()
+                < settings_.pomodoro_break_minutes * 60) {
+            return;
+        }
+    }
+    pomodoro_break_entry_ = nullptr;
+    Stop(true);
+    UI()->DisplayPomodoroBreak(settings_.pomodoro_break_minutes);
 }
 
 error Context::StartAutotrackerEvent(const TimelineEvent event) {
@@ -3864,6 +4249,7 @@ void Context::uiUpdaterActivity() {
 void Context::checkReminders() {
     displayReminder();
     displayPomodoro();
+    displayPomodoroBreak();
 }
 
 void Context::reminderActivity() {
@@ -3879,6 +4265,143 @@ void Context::reminderActivity() {
         checkReminders();
     }
 }
+
+void Context::syncerActivity() {
+    while (true) {
+        // Sleep in increments for faster shutdown.
+        for (int i = 0; i < 4; i++) {
+            if (syncer_.isStopped()) {
+                return;
+            }
+            Poco::Thread::sleep(250);
+        }
+
+        {
+            Poco::Mutex::ScopedLock lock(syncer_m_);
+
+            if (had_something_to_push_) {
+                TogglClient client(UI());
+
+                error err = pushChanges(&client, &had_something_to_push_);
+                if (err != noError) {
+                    displayError(err);
+                } else if (!had_something_to_push_) {
+                    setOnline("Data pushed");
+                }
+                displayError(save(false));
+
+                // Stop Activity when we are done syncing
+                try {
+                    {
+                        Poco::Mutex::ScopedLock lock(syncer_m_);
+                        if (syncer_.isRunning()) {
+                            syncer_.stop();
+                            syncer_.wait(5);
+                        }
+                    }
+                } catch(const Poco::Exception& exc) {
+                    logger().debug(exc.displayText());
+                } catch(const std::exception& ex) {
+                    logger().debug(ex.what());
+                } catch(const std::string& ex) {
+                    logger().debug(ex);
+                }
+            }
+        }
+    }
+}
+
+void Context::LoadMore() {
+    {
+        Poco::Mutex::ScopedLock lock(user_m_);
+        if (!user_ || user_->HasLoadedMore()) {
+            return;
+        }
+    }
+    {
+        Poco::Util::TimerTask::Ptr task =
+            new Poco::Util::TimerTaskAdapter<Context>(*this,
+                    &Context::onLoadMore);
+        Poco::Mutex::ScopedLock lock(timer_m_);
+        timer_.schedule(task, postpone(0));
+    }
+}
+
+void Context::onLoadMore(Poco::Util::TimerTask& task) {
+    bool needs_render = !user_->HasLoadedMore();
+    std::string api_token;
+    {
+        Poco::Mutex::ScopedLock lock(user_m_);
+        if (!user_ || user_->HasLoadedMore()) {
+            return;
+        }
+        api_token = user_->APIToken();
+    }
+
+    if (api_token.empty()) {
+        return logger().warning(
+            "cannot load more time entries without API token");
+    }
+
+    try {
+        std::stringstream ss;
+        ss << "/api/v9/me/time_entries?since="
+           << (Poco::Timestamp() - Poco::Timespan(60, 0, 0, 0, 0)).epochTime();
+
+        std::stringstream l;
+        l << "loading more: " << ss.str();
+        logger().debug(l.str());
+
+        TogglClient client(UI());
+        HTTPSRequest req;
+        req.host = urls::API();
+        req.relative_url = ss.str();
+        req.basic_auth_username = api_token;
+        req.basic_auth_password = "api_token";
+
+        HTTPSResponse resp = client.Get(req);
+        if (resp.err != noError) {
+            logger().warning(resp.err);
+            return;
+        }
+
+        std::string json = resp.body;
+
+        {
+            Poco::Mutex::ScopedLock lock(user_m_);
+            if (!user_)
+                return;
+            error err = user_->LoadTimeEntriesFromJSONString(json);
+
+            if (err != noError) {
+                logger().error(err);
+                return;
+            }
+
+            user_->ConfirmLoadedMore();
+
+            // Removes load more button if nothing is to be loaded
+            if (needs_render) {
+                UIElements render;
+                render.display_time_entries = true;
+                updateUI(render);
+            }
+        }
+
+        displayError(save(false));
+    }
+    catch (const Poco::Exception& exc) {
+        logger().warning(exc.displayText());
+    }
+    catch (const std::exception& ex) {
+        logger().warning(ex.what());
+    }
+    catch (const std::string& ex) {
+        logger().warning(ex);
+    }
+}
+
+
 
 void Context::SetLogPath(const std::string path) {
     Poco::AutoPtr<Poco::SimpleFileChannel> simpleFileChannel(
@@ -3946,8 +4469,25 @@ error Context::pullAllUserData(
             if (!user_) {
                 return error("cannot load user data when logged out");
             }
-            user_->LoadUserAndRelatedDataFromJSONString(user_data_json, !since);
+            TimeEntry *running_entry = user_->RunningTimeEntry();
+
+            error err = user_->LoadUserAndRelatedDataFromJSONString(user_data_json, !since);
+
+            if (err != noError) {
+                return err;
+            }
+            ws_missing_ = false;
+            TimeEntry *new_running_entry = user_->RunningTimeEntry();
+
+            // Reset reminder time when entry stopped by sync
+            if (running_entry && !new_running_entry) {
+                last_tracking_reminder_time_ = time(0);
+            }
         }
+
+        pullWorkspacePreferences(toggl_client);
+
+        pullUserPreferences(toggl_client);
 
         stopwatch.stop();
         std::stringstream ss;
@@ -3983,8 +4523,6 @@ error Context::pushChanges(
 
         std::string api_token("");
 
-        std::string json("");
-
         {
             Poco::Mutex::ScopedLock lock(user_m_);
             if (!user_) {
@@ -4015,64 +4553,75 @@ error Context::pushChanges(
                 *had_something_to_push = false;
                 return noError;
             }
+        }
 
-            error err = user_->UpdateJSON(
-                &clients,
-                &projects,
-                &time_entries,
-                &json);
+        std::stringstream ss;
+        ss << "Sync success (";
+
+        // Clients first as projects may depend on clients
+        if (clients.size() > 0) {
+            Poco::Stopwatch client_stopwatch;
+            client_stopwatch.start();
+            error err = pushClients(
+                clients,
+                api_token,
+                *toggl_client);
+            if (err != noError &&
+                    err.find(kClientNameAlreadyExists) == std::string::npos) {
+                return err;
+            }
+            client_stopwatch.stop();
+            ss << clients.size() << " clients in "
+               << client_stopwatch.elapsed() / 1000 << " ms";
+
+        }
+
+        // Projects second as time entries may depend on projects
+        if (projects.size() > 0) {
+            Poco::Stopwatch project_stopwatch;
+            project_stopwatch.start();
+            error err = pushProjects(
+                projects,
+                clients,
+                api_token,
+                *toggl_client);
+            if (err != noError &&
+                    err.find(kProjectNameAlready) == std::string::npos) {
+                return err;
+            }
+
+            // Update project id on time entries if needed
+            err = updateEntryProjects(
+                projects,
+                time_entries);
             if (err != noError) {
                 return err;
             }
+            project_stopwatch.stop();
+            ss << " | " << projects.size() << " projects in "
+               << project_stopwatch.elapsed() / 1000 << " ms";
         }
 
-        logger().debug(json);
-
-        HTTPSRequest req;
-        req.host = urls::API();
-        req.relative_url = "/api/v8/batch_updates";
-        req.payload = json;
-        req.basic_auth_username = api_token;
-        req.basic_auth_password = "api_token";
-
-        HTTPSResponse resp = toggl_client->Post(req);
-        if (resp.err != noError) {
-            // Mark the time entries as unsynced now
-            {
-                Poco::Mutex::ScopedLock lock(user_m_);
-                if (user_) {
-                    for (std::vector<TimeEntry *>::iterator
-                            it = time_entries.begin();
-                            it != time_entries.end();
-                            it++) {
-                        (*it)->SetUnsynced();
-                    }
-                }
+        // Time entries last to be sure clients and projects are synced
+        if (time_entries.size() > 0) {
+            Poco::Stopwatch entry_stopwatch;
+            entry_stopwatch.start();
+            error err = pushEntries(
+                models,
+                time_entries,
+                api_token,
+                *toggl_client);
+            if (err != noError) {
+                return err;
             }
-            return resp.err;
-        }
 
-        std::vector<BatchUpdateResult> results;
-        error err = BatchUpdateResult::ParseResponseArray(resp.body, &results);
-        if (err != noError) {
-            return err;
-        }
-
-        std::vector<error> errors;
-
-        {
-            Poco::Mutex::ScopedLock lock(user_m_);
-            BatchUpdateResult::ProcessResponseArray(&results, &models, &errors);
-        }
-
-        if (!errors.empty()) {
-            return Formatter::CollectErrors(&errors);
+            entry_stopwatch.stop();
+            ss << " | " << time_entries.size() << " time entries in "
+               << entry_stopwatch.elapsed() / 1000 << " ms";
         }
 
         stopwatch.stop();
-        std::stringstream ss;
-        ss << "Changes data JSON pushed and responses parsed in "
-           << stopwatch.elapsed() / 1000 << " ms";
+        ss << ") Total = " << stopwatch.elapsed() / 1000 << " ms";
         logger().debug(ss.str());
     } catch(const Poco::Exception& exc) {
         return exc.displayText();
@@ -4084,9 +4633,229 @@ error Context::pushChanges(
     return noError;
 }
 
+error Context::pushClients(
+    std::vector<Client *> clients,
+    std::string api_token,
+    TogglClient toggl_client) {
+    std::string client_json("");
+    error err = noError;
+    for (std::vector<Client *>::const_iterator it =
+        clients.begin();
+            it != clients.end(); it++) {
+        Json::Value clientJson = (*it)->SaveToJSON();
+
+        Json::StyledWriter writer;
+        client_json = writer.write(clientJson);
+
+        HTTPSRequest req;
+        req.host = urls::API();
+        req.relative_url = (*it)->ModelURL();
+        req.payload = client_json;
+        req.basic_auth_username = api_token;
+        req.basic_auth_password = "api_token";
+
+        HTTPSResponse resp = toggl_client.Post(req);
+
+        if (resp.err != noError) {
+            err = resp.body;
+            if (err.find(kClientNameAlreadyExists) != std::string::npos) {
+                // remove duplicate from db
+                (*it)->MarkAsDeletedOnServer();
+                displayError(save());
+            }
+            continue;
+        }
+
+        Json::Value root;
+        Json::Reader reader;
+        if (!reader.parse(resp.body, root)) {
+            err = error("error parsing client POST response");
+            continue;
+        }
+
+        (*it)->LoadFromJSON(root);
+    }
+
+    return err;
+}
+
+error Context::pushProjects(
+    std::vector<Project *> projects,
+    std::vector<Client *> clients,
+    std::string api_token,
+    TogglClient toggl_client) {
+    error err = noError;
+    std::string project_json("");
+    for (std::vector<Project *>::const_iterator it =
+        projects.begin();
+            it != projects.end(); it++) {
+        if (!(*it)->CID() && !(*it)->ClientGUID().empty()) {
+            // Find client id
+            for (std::vector<Client *>::const_iterator itc =
+                clients.begin();
+                    itc != clients.end(); itc++) {
+                if ((*itc)->GUID().compare((*it)->ClientGUID()) == 0) {
+                    (*it)->SetCID((*itc)->ID());
+                    break;
+                }
+            }
+        }
+
+        Json::Value projectJson = (*it)->SaveToJSON();
+
+        Json::StyledWriter writer;
+        project_json = writer.write(projectJson);
+
+        HTTPSRequest req;
+        req.host = urls::API();
+        req.relative_url = (*it)->ModelURL();
+        req.payload = project_json;
+        req.basic_auth_username = api_token;
+        req.basic_auth_password = "api_token";
+
+        HTTPSResponse resp = toggl_client.Post(req);
+
+        if (resp.err != noError) {
+            err = resp.body;
+            if (err.find(kProjectNameAlready) != std::string::npos) {
+                // remove duplicate from db
+                (*it)->MarkAsDeletedOnServer();
+                displayError(save());
+            }
+            continue;
+        }
+
+        Json::Value root;
+        Json::Reader reader;
+        if (!reader.parse(resp.body, root)) {
+            err = error("error parsing project POST response");
+            continue;
+        }
+
+        (*it)->LoadFromJSON(root);
+    }
+
+    return err;
+}
+
+error Context::updateEntryProjects(
+    std::vector<Project *> projects,
+    std::vector<TimeEntry *> time_entries) {
+    for (std::vector<TimeEntry *>::const_iterator it =
+        time_entries.begin();
+            it != time_entries.end(); it++) {
+        if (!(*it)->PID() && !(*it)->ProjectGUID().empty()) {
+            // Find project id
+            for (std::vector<Project *>::const_iterator itc =
+                projects.begin();
+                    itc != projects.end(); itc++) {
+                if ((*itc)->GUID().compare((*it)->ProjectGUID()) == 0) {
+                    (*it)->SetPID((*itc)->ID());
+                    break;
+                }
+            }
+        }
+    }
+
+    return noError;
+}
+
+error Context::pushEntries(
+    std::map<std::string, BaseModel *> models,
+    std::vector<TimeEntry *> time_entries,
+    std::string api_token,
+    TogglClient toggl_client) {
+
+    std::string entry_json("");
+    std::string error_message("");
+    bool error_found = false;
+    bool offline = false;
+    {
+        Poco::Mutex::ScopedLock lock(user_m_);
+        for (std::vector<TimeEntry *>::const_iterator it =
+            time_entries.begin();
+                it != time_entries.end(); it++) {
+
+            // Avoid trying to POST when we're offline
+            if (offline) {
+                // Mark the time entry as unsynced now
+                (*it)->SetUnsynced();
+                continue;
+            }
+
+            Json::Value entryJson = (*it)->SaveToJSON();
+
+            Json::StyledWriter writer;
+            entry_json = writer.write(entryJson);
+
+            //std::cout << entry_json;
+
+            HTTPSRequest req;
+            req.host = urls::API();
+            req.relative_url = (*it)->ModelURL();
+            req.payload = entry_json;
+            req.basic_auth_username = api_token;
+            req.basic_auth_password = "api_token";
+
+            HTTPSResponse resp;
+
+            if ((*it)->NeedsDELETE()) {
+                req.payload = "";
+                resp = toggl_client.Delete(req);
+            } else if ((*it)->ID()) {
+                resp = toggl_client.Put(req);
+            } else {
+                resp = toggl_client.Post(req);
+            }
+
+            if (resp.err != noError) {
+                // Not found on server. Probably deleted already.
+                if ((*it)->isNotFound(resp.body)) {
+                    (*it)->MarkAsDeletedOnServer();
+                    continue;
+                }
+                error_found = true;
+                error_message = resp.body;
+                if (error_message == noError) {
+                    error_message = resp.err;
+                }
+                // Mark the time entry as unsynced now
+                (*it)->SetUnsynced();
+
+                offline = IsNetworkingError(resp.err);
+
+                if(offline) {
+                    had_something_to_push_ = false;
+                }
+
+                continue;
+            }
+
+            if ((*it)->NeedsDELETE()) {
+                // Successfully deleted entry
+                (*it)->MarkAsDeletedOnServer();
+                continue;
+            }
+
+            Json::Value root;
+            Json::Reader reader;
+            if (!reader.parse(resp.body, root)) {
+                return error("error parsing time entry POST response");
+            }
+
+            (*it)->LoadFromJSON(root);
+        }
+    }
+
+    if (error_found) {
+        return error_message;
+    }
+    return noError;
+}
+
 error Context::pullObmExperiments() {
     try {
-        if (!HTTPSClient::Config.OBMExperimentNr) {
+        if (HTTPSClient::Config.OBMExperimentNrs.empty()) {
             logger().debug("No OBM experiment enabled by UI");
             return noError;
         }
@@ -4143,7 +4912,7 @@ error Context::pullObmExperiments() {
 
 error Context::pushObmAction() {
     try {
-        Poco::Int64 local_id(0);
+        ObmAction *for_upload = nullptr;
         HTTPSRequest req;
         req.host = urls::API();
         req.basic_auth_password = "api_token";
@@ -4165,12 +4934,25 @@ error Context::pushObmAction() {
                 return error("cannot push OBM actions without API token");
             }
 
-            // Upload first OBM action available.
-            ObmAction *for_upload = user_->related.ObmActions[0];
+            // find action that has not been uploaded yet
+            for (std::vector<ObmAction *>::iterator it =
+                user_->related.ObmActions.begin();
+                    it != user_->related.ObmActions.end();
+                    it++) {
+                ObmAction *model = *it;
+                if (!model->IsMarkedAsDeletedOnServer()) {
+                    for_upload = model;
+                    break;
+                }
+            }
+
+            if (!for_upload) {
+                return noError;
+            }
+
             Json::Value root = for_upload->SaveToJSON();
             req.relative_url = for_upload->ModelURL();
             req.payload = Json::StyledWriter().write(root);
-            local_id = for_upload->LocalID();
         }
 
         logger().debug(req.payload);
@@ -4178,30 +4960,16 @@ error Context::pushObmAction() {
         TogglClient toggl_client;
         HTTPSResponse resp = toggl_client.Post(req);
         if (resp.err != noError) {
-            return resp.err;
-        }
-
-        // Delete the uploaded OBM action
-        {
-            Poco::Mutex::ScopedLock lock(user_m_);
-            if (!user_) {
-                logger().warning("cannot push changes when logged out");
-                return noError;
-            }
-
-            for (std::vector<ObmAction *>::iterator it =
-                user_->related.ObmActions.begin();
-                    it != user_->related.ObmActions.end();
-                    it++) {
-                ObmAction *model = *it;
-                if (model->LocalID() == local_id) {
-                    model->MarkAsDeletedOnServer();
-                    model->Delete();
-                }
+            // backend responds 204 on success
+            if (resp.status_code != 204) {
+                return resp.err;
             }
         }
 
-        return noError;
+        // mark as deleted to prevent duplicate uploading
+        // (and make sure all other actions are uploaded)
+        for_upload->MarkAsDeletedOnServer();
+        for_upload->Delete();
     } catch(const Poco::Exception& exc) {
         return exc.displayText();
     } catch(const std::exception& ex) {
@@ -4261,6 +5029,172 @@ error Context::me(
     return noError;
 }
 
+bool Context::isTimeEntryLocked(TimeEntry* te) {
+    return isTimeLockedInWorkspace(te->Start(),
+                                   user_->related.WorkspaceByID(te->WID()));
+}
+
+bool Context::canChangeStartTimeTo(TimeEntry* te, time_t t) {
+    return !isTimeLockedInWorkspace(t, user_->related.WorkspaceByID(te->WID()));
+}
+
+bool Context::canChangeProjectTo(TimeEntry* te, Project* p) {
+    return !isTimeLockedInWorkspace(te->Start(),
+                                    user_->related.WorkspaceByID(p->WID()));
+}
+
+error Context::logAndDisplayUserTriedEditingLockedEntry() {
+    logger().warning("User tried editing locked time entry");
+    return displayError(error("Cannot change locked time entry"));
+}
+
+bool Context::isTimeLockedInWorkspace(time_t t, Workspace* ws) {
+    if (!ws)
+        return false;
+    if (!ws->Business())
+        return false;
+    if (ws->Admin())
+        return false;
+    auto lockedTime = ws->LockedTime();
+    if (lockedTime == 0)
+        return false;
+    return t < lockedTime;
+}
+
+error Context::pullWorkspacePreferences(TogglClient* toggl_client) {
+    Poco::Mutex::ScopedLock lock(user_m_);
+
+    std::vector<Workspace*> workspaces;
+    user_->related.WorkspaceList(&workspaces);
+
+    for (std::vector<Workspace*>::const_iterator
+            it = workspaces.begin();
+            it != workspaces.end();
+            it++) {
+        Workspace* ws = *it;
+
+        if (!ws->Business())
+            continue;
+
+        std::string json("");
+
+        error err = pullWorkspacePreferences(toggl_client, ws, &json);
+        if (err != noError) {
+            return err;
+        }
+
+        if (json.empty())
+            continue;
+
+        Json::Value root;
+        Json::Reader reader;
+        if (!reader.parse(json, root)) {
+            return error("Failed to load workspace preferences");
+        }
+
+        ws->LoadSettingsFromJson(root);
+    }
+
+    return noError;
+}
+
+error Context::pullWorkspacePreferences(
+    TogglClient* toggl_client,
+    Workspace* workspace,
+    std::string* json) {
+
+    std::string api_token = user_->APIToken();
+
+    if (api_token.empty()) {
+        return error("cannot pull user data without API token");
+    }
+
+    try {
+        std::stringstream ss;
+        ss << "/api/v9/workspaces/"
+           << workspace->ID()
+           << "/preferences";
+
+        HTTPSRequest req;
+        req.host = urls::API();
+        req.relative_url = ss.str();
+        req.basic_auth_username = api_token;
+        req.basic_auth_password = "api_token";
+
+        HTTPSResponse resp = toggl_client->Get(req);
+        if (resp.err != noError) {
+            return resp.err;
+        }
+
+        *json = resp.body;
+    }
+    catch (const Poco::Exception& exc) {
+        return exc.displayText();
+    }
+    catch (const std::exception& ex) {
+        return ex.what();
+    }
+    catch (const std::string& ex) {
+        return ex;
+    }
+    return noError;
+}
+
+error Context::pullUserPreferences(
+    TogglClient* toggl_client) {
+    std::string api_token = user_->APIToken();
+
+    if (api_token.empty()) {
+        return error("cannot pull user data without API token");
+    }
+
+    try {
+        std::string json("");
+        std::stringstream ss;
+        ss << "/api/v9/me/preferences";
+
+        HTTPSRequest req;
+        req.host = urls::API();
+        req.relative_url = ss.str();
+        req.basic_auth_username = api_token;
+        req.basic_auth_password = "api_token";
+
+        HTTPSResponse resp = toggl_client->Get(req);
+        if (resp.err != noError) {
+            return resp.err;
+        }
+
+        json = resp.body;
+
+        if (json.empty())
+            return noError;
+
+        Json::Value root;
+        Json::Reader reader;
+        if (!reader.parse(json, root)) {
+            return error("Failed to load user preferences");
+        }
+
+        if(user_->LoadUserPreferencesFromJSON(root)) {
+            // Reload list if user preferences have changed (collapse time entries)
+            UIElements render;
+            render.display_time_entries = true;
+            updateUI(render);
+        }
+
+    }
+    catch (const Poco::Exception& exc) {
+        return exc.displayText();
+    }
+    catch (const std::exception& ex) {
+        return ex.what();
+    }
+    catch (const std::string& ex) {
+        return ex;
+    }
+    return noError;
+}
+
 error Context::signup(
     TogglClient *toggl_client,
     const std::string email,
@@ -4282,10 +5216,13 @@ error Context::signup(
         Json::Value user;
         user["email"] = email;
         user["password"] = password;
+        user["created_with"] = Formatter::EscapeJSONString(
+            HTTPSClient::Config.UserAgent());
 
         Json::Value root;
         root["user"] = user;
 
+        // Not implemented in v9 as of 12.05.2017
         HTTPSRequest req;
         req.host = urls::API();
         req.relative_url = "/api/v8/signups";
@@ -4304,6 +5241,12 @@ error Context::signup(
     } catch(const std::string& ex) {
         return ex;
     }
+    return noError;
+}
+
+error Context::ToggleEntriesGroup(std::string name) {
+    entry_groups[name] = !entry_groups[name];
+    OpenTimeEntryList();
     return noError;
 }
 

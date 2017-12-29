@@ -5,6 +5,7 @@
 
 #include <QMainWindow>
 #include <QSystemTrayIcon>
+#include <QMessageBox>  // NOLINT
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -16,6 +17,7 @@
 #include "./aboutdialog.h"
 #include "./feedbackdialog.h"
 #include "./idlenotificationdialog.h"
+#include "./qxtglobalshortcut.h"
 
 namespace Ui {
 class MainWindowController;
@@ -35,14 +37,16 @@ class MainWindowController : public QMainWindow {
     static MainWindowController *Instance;
 
     void quitApp();
+    void setShortcuts();
 
  protected:
     void closeEvent(QCloseEvent *event);
     void showEvent(QShowEvent *event);
-
     void runScript();
 
  private slots:  // NOLINT
+    void toggleWindow(QSystemTrayIcon::ActivationReason r);
+
     void displayApp(const bool open);
 
     void displayRunningTimerState(TimeEntryView *te);
@@ -57,6 +61,10 @@ class MainWindowController : public QMainWindow {
         const QString title,
         const QString informative_text);
 
+    void displayPomodoroBreak(
+        const QString title,
+        const QString informative_text);
+
     void displayReminder(
         const QString title,
         const QString informative_text);
@@ -64,6 +72,8 @@ class MainWindowController : public QMainWindow {
     void displayUpdate(const QString url);
 
     void displayOnlineState(int64_t);
+    void showHideHotkeyPressed();
+    void continueStopHotkeyPressed();
 
     void onActionNew();
     void onActionContinue();
@@ -79,6 +89,9 @@ class MainWindowController : public QMainWindow {
     void onActionClear_Cache();
     void onActionHelp();
 
+    void updateShowHideShortcut();
+    void updateContinueStopShortcut();
+
  private:
     Ui::MainWindowController *ui;
 
@@ -86,6 +99,10 @@ class MainWindowController : public QMainWindow {
 
     bool tracking;
     bool loggedIn;
+    bool startInBackground;
+
+    QxtGlobalShortcut* showHide;
+    QxtGlobalShortcut* continueStop;
 
     QAction *actionEmail;
     QAction *actionNew;
@@ -105,6 +122,7 @@ class MainWindowController : public QMainWindow {
     QIcon icon;
     QIcon iconDisabled;
     QSystemTrayIcon *trayIcon;
+    QMessageBox *reminderPopup;
 
     bool pomodoro;
     bool reminder;

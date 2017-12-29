@@ -3,7 +3,7 @@
 # Project created by QtCreator 2014-06-15T00:08:05
 #
 #-------------------------------------------------
-
+include(../../../../third_party/qxtglobalshortcut5/qxt.pri)
 VERSION = 7.0.0
 
 DEFINES += APP_VERSION=\\\"$$VERSION\\\"
@@ -43,7 +43,9 @@ SOURCES += main.cpp\
     aboutdialog.cpp \
     feedbackdialog.cpp \
     idlenotificationdialog.cpp \
-    clickablelabel.cpp
+    clickablelabel.cpp \
+    colorpicker.cpp \
+    missingwswidget.cpp
 
 HEADERS  += \
     timeentryview.h \
@@ -65,7 +67,9 @@ HEADERS  += \
     aboutdialog.h \
     feedbackdialog.h \
     idlenotificationdialog.h \
-    clickablelabel.h
+    clickablelabel.h \
+    colorpicker.h \
+    missingwswidget.h
 
 FORMS    += \
     mainwindowcontroller.ui \
@@ -79,7 +83,9 @@ FORMS    += \
     preferencesdialog.ui \
     aboutdialog.ui \
     feedbackdialog.ui \
-    idlenotificationdialog.ui
+    idlenotificationdialog.ui \
+    colorpicker.ui \
+    missingwswidget.ui
 
 QMAKE_RPATHDIR += $$PWD/../../../lib/linux/TogglDesktopLibrary/build/release
 QMAKE_RPATHDIR += $$PWD/../../../../third_party/bugsnag-qt/build/release

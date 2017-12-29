@@ -143,7 +143,19 @@ bool_t toggl_set_settings_reminder(
 bool_t toggl_set_settings_pomodoro(
     void *context,
     const bool_t pomodoro) {
+    if (!pomodoro) {
+        return (toggl::noError == app(context)->SetSettingsPomodoro(pomodoro)
+                && toggl::noError ==
+                app(context)->SetSettingsPomodoroBreak(pomodoro));
+    }
     return toggl::noError == app(context)->SetSettingsPomodoro(pomodoro);
+}
+
+bool_t toggl_set_settings_pomodoro_break(
+    void *context,
+    const bool_t pomodoro_break) {
+    return toggl::noError == app(context)->
+           SetSettingsPomodoroBreak(pomodoro_break);
 }
 
 bool_t toggl_set_settings_idle_minutes(
@@ -177,6 +189,13 @@ bool_t toggl_set_settings_pomodoro_minutes(
     const uint64_t pomodoro_minutes) {
     return toggl::noError == app(context)->
            SetSettingsPomodoroMinutes(pomodoro_minutes);
+}
+
+bool_t toggl_set_settings_pomodoro_break_minutes(
+    void *context,
+    const uint64_t pomodoro_break_minutes) {
+    return toggl::noError == app(context)->
+           SetSettingsPomodoroBreakMinutes(pomodoro_break_minutes);
 }
 
 bool_t toggl_set_window_settings(
@@ -411,6 +430,11 @@ void toggl_sync(void *context) {
     app(context)->Sync();
 }
 
+void toggl_fullsync(void *context) {
+    logger().debug("toggl_fullsync");
+    app(context)->FullSync();
+}
+
 bool_t toggl_add_obm_action(
     void *context,
     const uint64_t experiment_id,
@@ -423,10 +447,10 @@ bool_t toggl_add_obm_action(
         to_string(value));
 }
 
-void toggl_set_obm_experiment_nr(
+void toggl_add_obm_experiment_nr(
     const uint64_t nr) {
 
-    toggl::HTTPSClient::Config.OBMExperimentNr = nr;
+    toggl::HTTPSClient::Config.OBMExperimentNrs.push_back(nr);
 }
 
 char_t *toggl_create_client(
@@ -482,6 +506,14 @@ char_t *toggl_add_project(
         p->ID(),
         guid);
 
+    // Update billable if new project is billable
+    if (p->Billable()) {
+        toggl_set_time_entry_billable(
+            context,
+            time_entry_guid,
+            p->Billable());
+    }
+
     return guid;
 }
 
@@ -510,7 +542,8 @@ char_t *toggl_start(
     const uint64_t task_id,
     const uint64_t project_id,
     const char_t *project_guid,
-    const char_t *tags) {
+    const char_t *tags,
+    const bool_t prevent_on_app) {
 
     logger().debug("toggl_start");
 
@@ -540,7 +573,8 @@ char_t *toggl_start(
         task_id,
         project_id,
         p_guid,
-        tag_list);
+        tag_list,
+        prevent_on_app);
     if (te) {
         return copy_string(te->GUID());
     }
@@ -590,11 +624,12 @@ void toggl_edit_preferences(void *context) {
 }
 
 bool_t toggl_continue_latest(
-    void *context) {
+    void *context,
+    const bool_t prevent_on_app) {
 
     logger().debug("toggl_continue_latest");
 
-    toggl::TimeEntry *result = app(context)->ContinueLatest();
+    toggl::TimeEntry *result = app(context)->ContinueLatest(prevent_on_app);
     if (!result) {
         return false;
     }
@@ -690,8 +725,9 @@ bool_t toggl_set_time_entry_description(
 }
 
 bool_t toggl_stop(
-    void *context) {
-    return toggl::noError == app(context)->Stop();
+    void *context,
+    const bool_t prevent_on_app) {
+    return toggl::noError == app(context)->Stop(prevent_on_app);
 }
 
 bool_t toggl_discard_time_at(
@@ -784,6 +820,12 @@ void toggl_get_project_colors(
     app(context)->UI()->DisplayProjectColors();
 }
 
+// Close/Open Entries Group
+void toggl_toggle_entries_group(void *context,
+                                const char_t *name) {
+    app(context)->ToggleEntriesGroup(to_string(name));
+}
+
 char_t *toggl_get_default_project_name(
     void *context) {
     std::string name("");
@@ -870,6 +912,12 @@ void toggl_on_error(
     app(context)->UI()->OnDisplayError(cb);
 }
 
+void toggl_on_ws_error(
+    void *context,
+    TogglDisplayWSError cb) {
+    app(context)->UI()->OnDisplayWSError(cb);
+}
+
 void toggl_on_online_state(
     void *context,
     TogglDisplayOnlineState cb) {
@@ -912,6 +960,12 @@ void toggl_on_pomodoro(
     app(context)->UI()->OnDisplayPomodoro(cb);
 }
 
+void toggl_on_pomodoro_break(
+    void *context,
+    TogglDisplayPomodoroBreak cb) {
+    app(context)->UI()->OnDisplayPomodoroBreak(cb);
+}
+
 void toggl_on_autotracker_notification(
     void *context,
     TogglDisplayAutotrackerNotification cb) {
@@ -952,8 +1006,15 @@ void toggl_open_in_browser(void *context) {
     app(context)->OpenReportsInBrowser();
 }
 
-void toggl_get_support(void *context) {
-    app(context)->UI()->DisplayURL(kSupportURL);
+void toggl_get_support(void *context, const int type) {
+    if (type == 1) {
+        app(context)->UI()->DisplayURL(kMacSupportURL);
+    } else if (type == 2) {
+        app(context)->UI()->DisplayURL(kLinuxSupportURL);
+    } else {
+        app(context)->UI()->DisplayURL(kGeneralSupportURL);
+    }
+
 }
 
 void toggl_on_workspace_select(
@@ -1195,4 +1256,53 @@ void toggl_set_keep_end_time_fixed(
 bool_t toggl_get_keep_end_time_fixed(
     void *context) {
     return app(context)->GetKeepEndTimeFixed();
+}
+
+
+void toggl_set_mini_timer_x(
+    void *context,
+    const int64_t value) {
+    app(context)->SetMiniTimerX(value);
+}
+
+int64_t toggl_get_mini_timer_x(
+    void *context) {
+    return app(context)->GetMiniTimerX();
+}
+
+void toggl_set_mini_timer_y(
+    void *context,
+    const int64_t value) {
+    app(context)->SetMiniTimerY(value);
+}
+
+int64_t toggl_get_mini_timer_y(
+    void *context) {
+    return app(context)->GetMiniTimerY();
+}
+
+void toggl_set_mini_timer_w(
+    void *context,
+    const int64_t value) {
+    app(context)->SetMiniTimerW(value);
+}
+
+int64_t toggl_get_mini_timer_w(
+    void *context) {
+    return app(context)->GetMiniTimerW();
+}
+
+void toggl_set_mini_timer_visible(
+    void *context,
+    const bool_t value) {
+    app(context)->SetMiniTimerVisible(value);
+}
+
+bool_t toggl_get_mini_timer_visible(
+    void *context) {
+    return app(context)->GetMiniTimerVisible();
+}
+
+void toggl_load_more(void* context) {
+    app(context)->LoadMore();
 }

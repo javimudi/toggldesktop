@@ -46,8 +46,8 @@ int main(int argc, char *argv[]) try {
     qRegisterMetaType<int64_t>("int64_t");
     qRegisterMetaType<bool_t>("bool_t");
     qRegisterMetaType<QVector<TimeEntryView*> >("QVector<TimeEntryView*>");
-    qRegisterMetaType<QVector<AutocompleteView*> >("QVector<AutocompleteView*");
-    qRegisterMetaType<QVector<GenericView*> >("QVector<GenericView*");
+    qRegisterMetaType<QVector<AutocompleteView*> >("QVector<AutocompleteView*>");
+    qRegisterMetaType<QVector<GenericView*> >("QVector<GenericView*>");
 
     QApplication::setApplicationName("Toggl Desktop");
     QApplication::setOrganizationName("Toggl");
@@ -71,7 +71,7 @@ int main(int argc, char *argv[]) try {
         QFont font(family);
         QApplication::setFont(font);
     }
-    qDebug() << "Application font: " << QApplication::font().toString();
+    // qDebug() << "Application font: " << QApplication::font().toString();
 
     QCommandLineParser parser;
     parser.setApplicationDescription("Toggl Desktop");
@@ -96,6 +96,11 @@ int main(int argc, char *argv[]) try {
         "path");
     parser.addOption(scriptPathOption);
 
+    // A boolean option with multiple names (-b, --background)
+    QCommandLineOption forceOption(QStringList() << "b" << "background",
+                                   QCoreApplication::translate("main", "Start app in background."));
+    parser.addOption(forceOption);
+
     parser.process(a);
 
     MainWindowController w(0,
@@ -105,7 +110,11 @@ int main(int argc, char *argv[]) try {
 
     a.w = &w;
 
-    w.show();
+    if (parser.isSet(forceOption)) {
+        w.hide();
+    } else {
+        w.show();
+    }
 
     return a.exec();
 } catch (std::exception &e) {  // NOLINT

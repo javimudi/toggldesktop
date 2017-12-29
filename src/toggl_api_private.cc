@@ -32,6 +32,7 @@ TogglAutocompleteView *autocomplete_item_init(
     result->Tags = copy_string(item.Tags);
     result->WorkspaceName = copy_string(item.WorkspaceName);
     result->ClientID = static_cast<unsigned int>(item.ClientID);
+    result->Billable = item.Billable;
     result->Next = nullptr;
     return result;
 }
@@ -231,12 +232,19 @@ TogglTimeEntryView *time_entry_view_item_init(
     view_item->DefaultWID = te.DefaultWID;
 
     view_item->Unsynced = te.Unsynced;
+    view_item->Locked = te.Locked;
 
     if (te.Error != toggl::noError) {
         view_item->Error = copy_string(te.Error);
     } else {
         view_item->Error = nullptr;
     }
+
+    view_item->Group = te.Group;
+    view_item->GroupOpen = te.GroupOpen;
+    view_item->GroupName = copy_string(te.GroupName);
+    view_item->GroupDuration = copy_string(te.GroupDuration);
+    view_item->GroupItemCount = te.GroupItemCount;
 
     view_item->Next = nullptr;
 
@@ -302,6 +310,12 @@ void time_entry_view_item_clear(
         item->Next = nullptr;
     }
 
+    free(item->GroupName);
+    item->GroupName = nullptr;
+
+    free(item->GroupDuration);
+    item->GroupDuration = nullptr;
+
     delete item;
 }
 
@@ -348,6 +362,8 @@ TogglSettingsView *settings_view_item_init(
 
     view->Pomodoro = settings.pomodoro;
     view->PomodoroMinutes = settings.pomodoro_minutes;
+    view->PomodoroBreak = settings.pomodoro_break;
+    view->PomodoroBreakMinutes = settings.pomodoro_break_minutes;
 
     return view;
 }

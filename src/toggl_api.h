@@ -74,8 +74,15 @@ extern "C" {
         // If syncing a time entry ended with an error,
         // the error is attached to the time entry
         char_t *Error;
+        bool_t Locked;
         // Indicates if time entry is not synced to server
         bool_t Unsynced;
+        // Group attributes
+        bool_t Group;
+        bool_t GroupOpen;
+        char_t *GroupName;
+        char_t *GroupDuration;
+        uint64_t GroupItemCount;
         // Next in list
         void *Next;
     } TogglTimeEntryView;
@@ -95,6 +102,8 @@ extern "C" {
         uint64_t ProjectID;
         uint64_t WorkspaceID;
         uint64_t Type;
+        // If its a time entry or project, it can be billable
+        bool Billable;
         // If its a time entry, it has tags
         char_t *Tags;
         char_t *WorkspaceName;
@@ -148,7 +157,9 @@ extern "C" {
         bool_t Autotrack;
         bool_t OpenEditorOnShortcut;
         bool_t Pomodoro;
+        bool_t PomodoroBreak;
         uint64_t PomodoroMinutes;
+        uint64_t PomodoroBreakMinutes;
     } TogglSettingsView;
 
     typedef struct {
@@ -183,6 +194,8 @@ extern "C" {
         const char_t *errmsg,
         const bool_t user_error);
 
+    typedef void (*TogglDisplayWSError)();
+
     typedef void (*TogglDisplayOnlineState)(
         const int64_t state);
 
@@ -201,6 +214,10 @@ extern "C" {
         const char_t *title,
         const char_t *informative_text);
 
+    typedef void (*TogglDisplayPomodoroBreak)(
+        const char_t *title,
+        const char_t *informative_text);
+
     typedef void (*TogglDisplayAutotrackerNotification)(
         const char_t *project_name,
         const uint64_t project_id,
@@ -216,7 +233,8 @@ extern "C" {
 
     typedef void (*TogglDisplayTimeEntryList)(
         const bool_t open,
-        TogglTimeEntryView *first);
+        TogglTimeEntryView *first,
+        const bool_t show_load_more_button);
 
     typedef void (*TogglDisplayAutocomplete)(
         TogglAutocompleteView *first);
@@ -345,6 +363,10 @@ extern "C" {
         void *context,
         TogglDisplayError cb);
 
+    TOGGL_EXPORT void toggl_on_ws_error(
+        void *context,
+        TogglDisplayWSError cb);
+
     TOGGL_EXPORT void toggl_on_update(
         void *context,
         TogglDisplayUpdate cb);
@@ -373,6 +395,10 @@ extern "C" {
         void *context,
         TogglDisplayPomodoro cb);
 
+    TOGGL_EXPORT void toggl_on_pomodoro_break(
+        void *context,
+        TogglDisplayPomodoroBreak cb);
+
     TOGGL_EXPORT void toggl_on_autotracker_notification(
         void *context,
         TogglDisplayAutotrackerNotification cb);
@@ -380,6 +406,9 @@ extern "C" {
     TOGGL_EXPORT void toggl_on_time_entry_list(
         void *context,
         TogglDisplayTimeEntryList cb);
+
+    TOGGL_EXPORT void toggl_toggle_entries_group(void *context,
+            const char_t *name);
 
     TOGGL_EXPORT void toggl_on_mini_timer_autocomplete(
         void *context,
@@ -469,7 +498,9 @@ extern "C" {
         void *context);
 
     TOGGL_EXPORT void toggl_get_support(
-        void *context);
+        void *context,
+        const int type);
+
 
     TOGGL_EXPORT bool_t toggl_feedback_send(
         void *context,
@@ -498,7 +529,8 @@ extern "C" {
         const char_t *guid);
 
     TOGGL_EXPORT bool_t toggl_continue_latest(
-        void *context);
+        void *context,
+        const bool_t prevent_on_app);
 
     TOGGL_EXPORT bool_t toggl_delete_time_entry(
         void *context,
@@ -548,7 +580,8 @@ extern "C" {
         const char_t *value);
 
     TOGGL_EXPORT bool_t toggl_stop(
-        void *context);
+        void *context,
+        const bool_t prevent_on_app);
 
     TOGGL_EXPORT bool_t toggl_discard_time_at(
         void *context,
@@ -616,6 +649,10 @@ extern "C" {
         void *context,
         const bool_t pomodoro);
 
+    TOGGL_EXPORT bool_t toggl_set_settings_pomodoro_break(
+        void *context,
+        const bool_t pomodoro_break);
+
     TOGGL_EXPORT bool_t toggl_set_settings_idle_minutes(
         void *context,
         const uint64_t idle_minutes);
@@ -631,6 +668,10 @@ extern "C" {
     TOGGL_EXPORT bool_t toggl_set_settings_pomodoro_minutes(
         void *context,
         const uint64_t pomodoro_minutes);
+
+    TOGGL_EXPORT bool_t toggl_set_settings_pomodoro_break_minutes(
+        void *context,
+        const uint64_t pomodoro_break_minutes);
 
     TOGGL_EXPORT bool_t toggl_set_settings_manual_mode(
         void *context,
@@ -732,7 +773,8 @@ extern "C" {
         const uint64_t task_id,
         const uint64_t project_id,
         const char_t *project_guid,
-        const char_t *tags);
+        const char_t *tags,
+        const bool_t prevent_on_app);
 
     // returns GUID of the new project. you must free() the result
     TOGGL_EXPORT char_t *toggl_add_project(
@@ -757,7 +799,7 @@ extern "C" {
         const char_t *key,
         const char_t *value);
 
-    TOGGL_EXPORT void toggl_set_obm_experiment_nr(
+    TOGGL_EXPORT void toggl_add_obm_experiment_nr(
         const uint64_t nr);
 
     TOGGL_EXPORT bool_t toggl_set_default_project(
@@ -795,6 +837,9 @@ extern "C" {
         void *context);
 
     TOGGL_EXPORT void toggl_sync(
+        void *context);
+
+    TOGGL_EXPORT void toggl_fullsync(
         void *context);
 
     TOGGL_EXPORT bool_t toggl_timeline_toggle_recording(
@@ -889,6 +934,37 @@ extern "C" {
 
     TOGGL_EXPORT bool_t toggl_get_keep_end_time_fixed(
         void *context);
+
+
+    TOGGL_EXPORT void toggl_set_mini_timer_x(
+        void *context,
+        const int64_t value);
+
+    TOGGL_EXPORT int64_t toggl_get_mini_timer_x(
+        void *context);
+
+    TOGGL_EXPORT void toggl_set_mini_timer_y(
+        void *context,
+        const int64_t value);
+
+    TOGGL_EXPORT int64_t toggl_get_mini_timer_y(
+        void *context);
+
+    TOGGL_EXPORT void toggl_set_mini_timer_w(
+        void *context,
+        const int64_t value);
+
+    TOGGL_EXPORT int64_t toggl_get_mini_timer_w(
+        void *context);
+
+    TOGGL_EXPORT void toggl_set_mini_timer_visible(
+        void *context,
+        const bool_t value);
+
+    TOGGL_EXPORT bool_t toggl_get_mini_timer_visible(
+        void *context);
+
+    TOGGL_EXPORT void toggl_load_more(void* context);
 
 #undef TOGGL_EXPORT
 

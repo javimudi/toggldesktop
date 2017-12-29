@@ -39,6 +39,8 @@ namespace TogglDesktop
             this.setUIToStoppedState();
         }
 
+        public bool PreventOnApp { get; set; }
+
         private void setupSecondsTimer()
         {
             this.secondsTimer.Interval = TimeSpan.FromSeconds(1);
@@ -177,6 +179,10 @@ namespace TogglDesktop
             {
                 this.clearSelectedProject();
             }
+
+            this.billabeIcon.ShowOnlyIf(item.Billable);
+            this.tagsIcon.ShowOnlyIf(!string.IsNullOrEmpty(item.Tags));
+            this.tagsIcon.Tag = item.Tags;
         }
 
         private void cancelProjectSelectionButtonClick(object sender, RoutedEventArgs e)
@@ -193,7 +199,7 @@ namespace TogglDesktop
 
         private void onManualAddButtonClick(object sender, RoutedEventArgs e)
         {
-            var guid = Toggl.Start("", "0", 0, 0, "", "");
+            var guid = Toggl.Start("", "0", 0, 0, "", "", this.PreventOnApp);
             Toggl.Edit(guid, false, Toggl.Duration);
         }
 
@@ -266,6 +272,8 @@ namespace TogglDesktop
             using (Performance.Measure("starting time entry from timer"))
             {
                 var durationText = this.durationTextBox.Text;
+                var billable = (this.billabeIcon.Visibility == Visibility.Visible);
+                var tagsString = (this.tagsIcon.Tag != null) ? this.tagsIcon.Tag.ToString() : "";
 
                 var guid = Toggl.Start(
                     this.descriptionTextBox.Text,
@@ -273,12 +281,18 @@ namespace TogglDesktop
                     this.completedProject.TaskId,
                     this.completedProject.ProjectId,
                     "",
-                    ""
+                    tagsString,
+                    this.PreventOnApp
                     );
 
                 if (!string.IsNullOrEmpty(guid))
                 {
                     Toggl.SetTimeEntryDuration(guid, durationText);
+                }
+
+                if (billable)
+                {
+                    Toggl.SetTimeEntryBillable(guid, billable);
                 }
             }
         }
@@ -287,7 +301,7 @@ namespace TogglDesktop
         {
             using (Performance.Measure("stopping time entry from timer"))
             {
-                Toggl.Stop();
+                Toggl.Stop(this.PreventOnApp);
             }
         }
 
@@ -358,6 +372,10 @@ namespace TogglDesktop
             this.completedProject = new ProjectInfo();
             this.cancelProjectSelectionButton.Visibility = Visibility.Collapsed;
             this.taskLabel.Visibility = Visibility.Collapsed;
+
+            this.billabeIcon.Visibility = Visibility.Collapsed;
+            this.tagsIcon.Visibility = Visibility.Collapsed;
+            this.tagsIcon.Tag = "";
         }
 
         #region display helpers

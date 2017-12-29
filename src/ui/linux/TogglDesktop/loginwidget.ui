@@ -23,7 +23,7 @@
    <bool>false</bool>
   </property>
   <property name="styleSheet">
-   <string notr="true"/>
+   <string notr="true">font-size:13px;</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing">
@@ -140,7 +140,7 @@
             <bool>false</bool>
            </property>
            <property name="styleSheet">
-            <string notr="true">background-color: rgb(255, 255, 255);</string>
+            <string notr="true">background-color: rgb(255, 255, 255);color:rgb(85, 85, 85);</string>
            </property>
            <property name="placeholderText">
             <string>Your e-mail address</string>
@@ -165,7 +165,7 @@
             <bool>false</bool>
            </property>
            <property name="styleSheet">
-            <string notr="true">background-color: rgb(255, 255, 255);</string>
+            <string notr="true">background-color: rgb(255, 255, 255);color:rgb(85, 85, 85);</string>
            </property>
            <property name="text">
             <string/>
@@ -220,7 +220,7 @@
              <bool>false</bool>
             </property>
             <property name="styleSheet">
-             <string notr="true">background-color: rgb(255, 255, 255);</string>
+             <string notr="true">background-color: rgb(255, 255, 255);color:rgb(85, 85, 85);</string>
             </property>
             <property name="text">
              <string>Log in</string>
@@ -251,7 +251,7 @@
              <bool>false</bool>
             </property>
             <property name="styleSheet">
-             <string notr="true">background-color: rgb(255, 255, 255);</string>
+             <string notr="true">background-color: rgb(255, 255, 255);color:rgb(85, 85, 85);</string>
             </property>
             <property name="text">
              <string>Sign up</string>
@@ -284,10 +284,7 @@
            </property>
            <property name="font">
             <font>
-             <pointsize>10</pointsize>
-             <weight>75</weight>
-             <bold>true</bold>
-             <underline>true</underline>
+             <pointsize>-1</pointsize>
             </font>
            </property>
            <property name="styleSheet">
@@ -323,10 +320,7 @@
            </property>
            <property name="font">
             <font>
-             <pointsize>10</pointsize>
-             <weight>75</weight>
-             <bold>true</bold>
-             <underline>true</underline>
+             <pointsize>-1</pointsize>
             </font>
            </property>
            <property name="mouseTracking">

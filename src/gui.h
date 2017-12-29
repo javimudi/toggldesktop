@@ -53,7 +53,13 @@ class TimeEntry {
     , DefaultWID(0)
     , WorkspaceName("")
     , Unsynced(false)
-    , Error(noError) {}
+    , Error(noError)
+    , Locked(false)
+    , Group(false)
+    , GroupOpen(false)
+    , GroupName("")
+    , GroupDuration("")
+    , GroupItemCount(0) {}
 
     int64_t DurationInSeconds;
     std::string Description;
@@ -87,6 +93,13 @@ class TimeEntry {
     // If syncing a time entry ended with an error,
     // the error is attached to the time entry
     std::string Error;
+    bool Locked;
+    bool Group;
+    bool GroupOpen;
+    // date + description + pid
+    std::string GroupName;
+    std::string GroupDuration;
+    uint64_t GroupItemCount;
 
     void Fill(toggl::TimeEntry * const model);
 
@@ -107,6 +120,7 @@ class Autocomplete {
     , ProjectID(0)
     , WorkspaceID(0)
     , Type(0)
+    , Billable(false)
     , Tags("")
     , WorkspaceName("")
     , ClientID(0) {}
@@ -138,6 +152,7 @@ class Autocomplete {
            << " ProjectID=" << ProjectID
            << " WorkspaceID=" << WorkspaceID
            << " Type=" << Type
+           << " Billable=" << Billable
            << " WorkspaceName=" << WorkspaceName
            << " Tags=" << Tags;
         return ss.str();
@@ -157,6 +172,8 @@ class Autocomplete {
     uint64_t ProjectID;
     uint64_t WorkspaceID;
     uint64_t Type;
+    // If its a time entry or project, it can be billable
+    bool Billable;
     // If its a time entry, it has tags
     std::string Tags;
     std::string WorkspaceName;
@@ -215,7 +232,9 @@ class Settings {
     , Autotrack(false)
     , OpenEditorOnShortcut(false)
     , Pomodoro(false)
-    , PomodoroMinutes(0) {}
+    , PomodoroMinutes(0)
+    , PomodoroBreak(false)
+    , PomodoroBreakMinutes(0) {}
 
     bool UseProxy;
     std::string ProxyHost;
@@ -246,7 +265,9 @@ class Settings {
     bool Autotrack;
     bool OpenEditorOnShortcut;
     bool Pomodoro;
+    bool PomodoroBreak;
     uint64_t PomodoroMinutes;
+    uint64_t PomodoroBreakMinutes;
 
     bool operator == (const Settings& other) const;
 };
@@ -303,6 +324,7 @@ class GUI : public SyncStateMonitor {
     , on_display_url_(nullptr)
     , on_display_reminder_(nullptr)
     , on_display_pomodoro_(nullptr)
+    , on_display_pomodoro_break_(nullptr)
     , on_display_time_entry_list_(nullptr)
     , on_display_time_entry_autocomplete_(nullptr)
     , on_display_project_autocomplete_(nullptr)
@@ -336,6 +358,7 @@ class GUI : public SyncStateMonitor {
     void DisplayApp();
 
     error DisplayError(const error);
+    error DisplayWSError();
 
     void DisplayHelpArticles(
         const std::vector<HelpArticle> articles);
@@ -350,6 +373,8 @@ class GUI : public SyncStateMonitor {
 
     void DisplayPomodoro(const Poco::UInt64 minutes);
 
+    void DisplayPomodoroBreak(const Poco::UInt64 minutes);
+
     void DisplayAutotrackerNotification(
         toggl::Project *const p,
         toggl::Task *const t);
@@ -362,7 +387,8 @@ class GUI : public SyncStateMonitor {
 
     void DisplayTimeEntryList(
         const bool open,
-        const std::vector<view::TimeEntry> list);
+        const std::vector<view::TimeEntry> list,
+        const bool show_load_more_button);
 
     void DisplayProjectColors();
 
@@ -438,6 +464,10 @@ class GUI : public SyncStateMonitor {
         on_display_error_ = cb;
     }
 
+    void OnDisplayWSError(TogglDisplayWSError cb) {
+        on_display_ws_error_ = cb;
+    }
+
     void OnDisplayOnlineState(TogglDisplayOnlineState cb) {
         on_display_online_state_ = cb;
     }
@@ -456,6 +486,10 @@ class GUI : public SyncStateMonitor {
 
     void OnDisplayPomodoro(TogglDisplayPomodoro cb) {
         on_display_pomodoro_ = cb;
+    }
+
+    void OnDisplayPomodoroBreak(TogglDisplayPomodoroBreak cb) {
+        on_display_pomodoro_break_ = cb;
     }
 
     void OnDisplayAutotrackerNotification(
@@ -563,11 +597,13 @@ class GUI : public SyncStateMonitor {
 
     TogglDisplayApp on_display_app_;
     TogglDisplayError on_display_error_;
+    TogglDisplayWSError on_display_ws_error_;
     TogglDisplayOnlineState on_display_online_state_;
     TogglDisplayLogin on_display_login_;
     TogglDisplayURL on_display_url_;
     TogglDisplayReminder on_display_reminder_;
     TogglDisplayPomodoro on_display_pomodoro_;
+    TogglDisplayPomodoroBreak on_display_pomodoro_break_;
     TogglDisplayTimeEntryList on_display_time_entry_list_;
     TogglDisplayAutocomplete on_display_time_entry_autocomplete_;
     TogglDisplayAutocomplete on_display_project_autocomplete_;

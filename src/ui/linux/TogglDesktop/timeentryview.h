@@ -39,13 +39,20 @@ class TimeEntryView : public QObject {
     uint64_t UpdatedAt;
     QString DateHeader;
     QString DateDuration;
-    bool DurOnly;
     bool IsHeader;
     bool CanAddProjects;
     bool CanSeeBillable;
     uint64_t DefaultWID;
     QString WorkspaceName;
     QString Error;
+    bool ConfirmlessDelete;
+    bool Unsynced;
+    // Group mode items
+    bool Group;
+    bool GroupOpen;
+    QString GroupName;
+    QString GroupDuration;
+    u_int64_t GroupItemCount;
 };
 
 #endif  // SRC_UI_LINUX_TOGGLDESKTOP_TIMEENTRYVIEW_H_

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 
 namespace TogglDesktop
@@ -12,6 +13,8 @@ namespace TogglDesktop
     {
         public event EventHandler FocusTimer;
         public event EventHandler CloseEditPopup;
+
+        private readonly Storyboard loadMoreSpinnerAnimation;
 
         private TimeEntryCell highlightedCell;
 
@@ -39,6 +42,8 @@ namespace TogglDesktop
         public TimeEntryList()
         {
             this.InitializeComponent();
+
+            this.loadMoreSpinnerAnimation = (Storyboard)this.Resources["RotateLoadMoreSpinner"];
 
             this.resizeBackground.Width = SystemParameters.VerticalScrollBarWidth;
             this.resizeBackground.Height = SystemParameters.VerticalScrollBarWidth;
@@ -84,7 +89,7 @@ namespace TogglDesktop
                 // y will be 0 if the time entry list hasnt rendered yet
                 var y = cell.TransformToAncestor(this.panel).Transform(new Point(0, 0)).Y + cell.ActualHeight;
                 this.highlightRectangleTop.Height = Math.Max(0, y - 53);
-                this.highlightRectangleBottom.Height = this.panel.ActualHeight - y;
+                this.highlightRectangleBottom.Height = Math.Max(0, this.panel.ActualHeight - y);
                 this.highlightRectangleTop.Visibility = Visibility.Visible;
                 this.highlightRectangleBottom.Visibility = Visibility.Visible;
             }
@@ -237,6 +242,14 @@ namespace TogglDesktop
         {
             if (!this.hasKeyboardSelection)
                 return;
+
+            TimeEntryCell item = this.cells[this.keyboardSelectedId].Item2;
+
+            if (item.confirmlessDelete)
+            {
+                Toggl.DeleteTimeEntry(this.keyboardHighlightedGUID);
+                return;
+            }
 
             Toggl.AskToDeleteEntry(this.keyboardHighlightedGUID);
         }
@@ -426,5 +439,58 @@ namespace TogglDesktop
         #endregion
 
         #endregion
+
+        #region load more
+        
+        private void onLoadMoreButtonClick(object sender, RoutedEventArgs e)
+        {
+            this.loadMore();
+        }
+
+        private void loadMore()
+        {
+            this.loadMoreButton.Visibility = Visibility.Visible;
+            this.loadMoreButton.IsEnabled = false;
+            this.loadMoreButtonText.Visibility = Visibility.Collapsed;
+            this.loadMoreSpinnerAnimation.Begin();
+            this.loadMoreSpinner.Visibility = Visibility.Visible;
+
+            Toggl.LoadMore();
+        }
+
+        private void showLoadMoreButton()
+        {
+            this.loadMoreButton.Visibility = Visibility.Visible;
+            this.loadMoreButtonText.Visibility = Visibility.Visible;
+            this.loadMoreSpinner.Visibility = Visibility.Collapsed;
+            if (!this.loadMoreButton.IsEnabled)
+            {
+                this.loadMoreSpinnerAnimation.Stop();
+            }
+            this.loadMoreButton.IsEnabled = true;
+        }
+
+        private void hideLoadMoreButton()
+        {
+            this.loadMoreButton.Visibility = Visibility.Collapsed;
+            if (!this.loadMoreButton.IsEnabled)
+            {
+                this.loadMoreSpinnerAnimation.Stop();
+            }
+        }
+
+        #endregion
+
+        public void SetLoadMoreButtonVisibility(bool showLoadMoreButton)
+        {
+            if (showLoadMoreButton)
+            {
+                this.showLoadMoreButton();
+            }
+            else
+            {
+                this.hideLoadMoreButton();
+            }
+        }
     }
 }

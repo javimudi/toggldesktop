@@ -13,11 +13,10 @@ Table of Contents
     * [Windows](#windows)
       * [Install dev tools](#install-dev-tools)
       * [Build OpenSSL](#build-openssl)
-      * [Install NuGet packages](#install-nuget-packages)
       * [Build the app](#build-the-app)
   * [Downloads](#downloads)
-    * [OSX](#osx)
-    * [Windows](#windows-1)
+    * [macOS](#macos)
+    * [Windows (64 bit only)](#windows-64-bit-only)
     * [Linux (64 bit only)](#linux-64-bit-only)
   * [Change log](#change-log)
   * [Documentation](#documentation)
@@ -65,23 +64,29 @@ If qmake is not on your PATH, set this first, before running make:
 export QMAKE=/usr/bin/qmake-qt5
 ```
 
-You also need libreadline-dev to build.
-
 Below are some distribution specific package requirements:
 
 ## Debian
 
+* libreadline-dev
 * qt5-default
+* libxss-dev
+* libqt5x11extras5-dev
+* libqt5webkit5-dev
 
 ## Ubuntu
 
+* libreadline-dev
 * xorg-dev
 * qtcreator
 * libxss-dev
 * libqt5webkit5-dev
+* libqt5x11extras5-dev
+* qtbase5-private-dev
 
 ## Fedora
 
+* readline-devel
 * qt5-qtwebkit-devel
 * libXScrnSaver-devel
 * qt5-qtsvg
@@ -117,13 +122,13 @@ NASM can be downloaded here: http://www.nasm.us/pub/nasm/releasebuilds/?C=M;O=D
 
 Now, select *Release* from the Solution Configurations combobox in the Visual Studio toolbar, and build the solution.
 
-If you have Cygwin installed, you can also build the app from from Cygwin terminal, using make. (See OSX and Linux build instructions on above regarding make).
+If you have Cygwin installed, you can also build the app from from Cygwin terminal, using make. (See macOS and Linux build instructions on above regarding make).
 
 # Downloads
 
-## OSX
+## macOS
 
-Toggl built and signed app for OSX is [available for download](https://www.toggl.com/api/v8/installer?platform=darwin&app=td&channel=stable). You need at least OSX 10.8.
+Toggl built and signed app for macOS is [available for download](https://www.toggl.com/api/v8/installer?platform=darwin&app=td&channel=stable). You need at least macOS 10.8.
 
 ## Windows (64 bit only)
 

@@ -34,7 +34,9 @@ class User : public BaseModel {
     , duration_format_("")
     , offline_data_("")
     , default_pid_(0)
-    , default_tid_(0) {}
+    , default_tid_(0)
+    , has_loaded_more_(false)
+    , collapse_entries_(false) {}
 
     ~User();
 
@@ -81,7 +83,8 @@ class User : public BaseModel {
         const std::string client_guid,
         const std::string project_name,
         const bool is_private,
-        const std::string project_color);
+        const std::string project_color,
+        const bool billable);
 
     Client *CreateClient(
         const Poco::UInt64 workspace_id,
@@ -152,6 +155,11 @@ class User : public BaseModel {
     }
     void SetDefaultTID(const Poco::UInt64);
 
+    const bool &CollapseEntries() const {
+        return collapse_entries_;
+    }
+    void SetCollapseEntries(const bool value);
+
     RelatedData related;
 
     // Override BaseModel
@@ -171,6 +179,8 @@ class User : public BaseModel {
         const std::string &json,
         const bool &including_related_data);
 
+    error LoadTimeEntriesFromJSONString(const std::string &json);
+
     error SetAPITokenFromOfflineData(const std::string password);
 
     void MarkTimelineBatchAsUploaded(
@@ -179,12 +189,13 @@ class User : public BaseModel {
     std::vector<TimelineEvent> CompressedTimeline() const;
 
     error UpdateJSON(
-        std::vector<Client *> * const,
-        std::vector<Project *> * const,
         std::vector<TimeEntry *> * const,
         std::string *result) const;
 
     void LoadObmExperiments(Json::Value const &obm);
+
+    bool LoadUserPreferencesFromJSON(
+        Json::Value data);
 
     template<typename T>
     void EnsureWID(T *model) const {
@@ -220,6 +231,14 @@ class User : public BaseModel {
         const std::string email,
         const std::string password,
         std::string *result);
+
+    bool HasLoadedMore() {
+        return has_loaded_more_;
+    }
+
+    void ConfirmLoadedMore() {
+        has_loaded_more_ = true;
+    }
 
  private:
     void loadUserTagFromJSON(
@@ -288,6 +307,9 @@ class User : public BaseModel {
     std::string offline_data_;
     Poco::UInt64 default_pid_;
     Poco::UInt64 default_tid_;
+
+    bool has_loaded_more_;
+    bool collapse_entries_;
 };
 
 template<class T>

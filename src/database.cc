@@ -87,6 +87,32 @@ Database::Database(const std::string db_path)
         return;
     }
 
+    // Remove Time Entries older than 30 days from local db
+    Poco::LocalDateTime today;
+
+    Poco::LocalDateTime start =
+        today - Poco::Timespan(30 * Poco::Timespan::DAYS);
+
+    err = deleteAllFromTableByDate(
+        "time_entries", start.timestamp());
+
+    if (err != noError) {
+        logger().error("failed to clean Up Time Entries Data: " + err);
+        // but will continue, its not vital
+    }
+
+    // Remove Synced Timeline Events older than 9 days from local db
+    Poco::LocalDateTime timeline_start =
+        today - Poco::Timespan(9 * Poco::Timespan::DAYS);
+
+    err = deleteAllSyncedTimelineEventsByDate(
+        timeline_start.timestamp());
+
+    if (err != noError) {
+        logger().error("failed to clean Up Timeline Events Data: " + err);
+        // but will continue, its not vital
+    }
+
     err = vacuum();
     if (err != noError) {
         logger().error("failed to vacuum: " + err);
@@ -211,6 +237,61 @@ error Database::deleteAllFromTableByUID(
     }
     return last_error("deleteAllFromTableByUID");
 }
+
+error Database::deleteAllFromTableByDate(
+    const std::string table_name,
+    const Poco::Timestamp &time) {
+
+    if (table_name.empty()) {
+        return error("Cannot delete from table without table name");
+    }
+
+    const Poco::Int64 stopTime = time.epochTime();
+
+    try {
+        Poco::Mutex::ScopedLock lock(session_m_);
+
+        poco_check_ptr(session_);
+
+        *session_ <<
+                  "delete from " + table_name + " where "
+                  "id NOT NULL and stop < :stop",
+                  useRef(stopTime),
+                  now;
+    } catch(const Poco::Exception& exc) {
+        return exc.displayText();
+    } catch(const std::exception& ex) {
+        return ex.what();
+    } catch(const std::string& ex) {
+        return ex;
+    }
+    return last_error("deleteAllFromTableByDate");
+}
+
+error Database::deleteAllSyncedTimelineEventsByDate(
+    const Poco::Timestamp &time) {
+    const Poco::Int64 endTime = time.epochTime();
+
+    try {
+        Poco::Mutex::ScopedLock lock(session_m_);
+
+        poco_check_ptr(session_);
+
+        *session_ <<
+                  "delete from timeline_events where "
+                  "uploaded = 1 OR end_time < :end_time",
+                  useRef(endTime),
+                  now;
+    } catch(const Poco::Exception& exc) {
+        return exc.displayText();
+    } catch(const std::exception& ex) {
+        return ex.what();
+    } catch(const std::string& ex) {
+        return ex;
+    }
+    return last_error("deleteAllSyncedTimelineEventsByDate");
+}
+
 
 error Database::journalMode(std::string *mode) {
     try {
@@ -368,7 +449,8 @@ error Database::LoadSettings(Settings *settings) {
                   "remind_mon, remind_tue, remind_wed, remind_thu, "
                   "remind_fri, remind_sat, remind_sun, autotrack, "
                   "open_editor_on_shortcut, has_seen_beta_offering, "
-                  "pomodoro, pomodoro_minutes "
+                  "pomodoro, pomodoro_minutes, "
+                  "pomodoro_break, pomodoro_break_minutes "
                   "from settings "
                   "limit 1",
                   into(settings->use_idle_detection),
@@ -396,6 +478,8 @@ error Database::LoadSettings(Settings *settings) {
                   into(settings->has_seen_beta_offering),
                   into(settings->pomodoro),
                   into(settings->pomodoro_minutes),
+                  into(settings->pomodoro_break),
+                  into(settings->pomodoro_break_minutes),
                   limit(1),
                   now;
     } catch(const Poco::Exception& exc) {
@@ -439,6 +523,30 @@ error Database::SaveWindowSettings(
     }
 
     return last_error("SaveWindowSettings");
+}
+
+error Database::SetMiniTimerX(const Poco::Int64 x) {
+    return setSettingsValue("mini_timer_x", x);
+}
+
+error Database::GetMiniTimerX(Poco::Int64* x) {
+    return getSettingsValue("mini_timer_x", x);
+}
+
+error Database::SetMiniTimerY(const Poco::Int64 y) {
+    return setSettingsValue("mini_timer_y", y);
+}
+
+error Database::GetMiniTimerY(Poco::Int64* y) {
+    return getSettingsValue("mini_timer_y", y);
+}
+
+error Database::SetMiniTimerW(const Poco::Int64 w) {
+    return setSettingsValue("mini_timer_w", w);
+}
+
+error Database::GetMiniTimerW(Poco::Int64* w) {
+    return getSettingsValue("mini_timer_w", w);
 }
 
 error Database::LoadWindowSettings(
@@ -523,6 +631,15 @@ error Database::SetCompactMode(
 
 error Database::GetCompactMode(bool *result) {
     return getSettingsValue("compact_mode", result);
+}
+
+error Database::SetMiniTimerVisible(
+    const bool value) {
+    return setSettingsValue("mini_timer_visible", value);
+}
+
+error Database::GetMiniTimerVisible(bool* result) {
+    return getSettingsValue("mini_timer_visible", result);
 }
 
 error Database::SetKeepEndTimeFixed(
@@ -718,6 +835,10 @@ error Database::SetSettingsPomodoro(const bool &pomodoro) {
     return setSettingsValue("pomodoro", pomodoro);
 }
 
+error Database::SetSettingsPomodoroBreak(const bool &pomodoro_break) {
+    return setSettingsValue("pomodoro_break", pomodoro_break);
+}
+
 error Database::SetSettingsIdleMinutes(const Poco::UInt64 idle_minutes) {
     Poco::UInt64 new_value = idle_minutes;
     if (new_value < 1) {
@@ -806,6 +927,15 @@ error Database::SetSettingsPomodoroMinutes(
     return setSettingsValue("pomodoro_minutes", new_value);
 }
 
+error Database::SetSettingsPomodoroBreakMinutes(
+    const Poco::UInt64 pomodoro_break_minutes) {
+    Poco::UInt64 new_value = pomodoro_break_minutes;
+    if (new_value < 1) {
+        new_value = 1;
+    }
+    return setSettingsValue("pomodoro_break_minutes", new_value);
+}
+
 error Database::SaveProxySettings(
     const bool &use_proxy,
     const Proxy &proxy) {
@@ -861,6 +991,36 @@ error Database::Trim(const std::string text, std::string *result) {
         return ex;
     }
     return last_error("Trim");
+}
+
+error Database::ResetWindow() {
+    try {
+        Poco::Mutex::ScopedLock lock(session_m_);
+
+        poco_check_ptr(session_);
+
+        *session_ <<
+                  "update settings set "
+                  "window_x = 0, "
+                  "window_y = 0, "
+                  "window_height = 0, "
+                  "window_width = 0, "
+                  "window_maximized = 0, "
+                  "window_minimized = 0, "
+                  "window_edit_size_height = 0, "
+                  "window_edit_size_width = 0, "
+                  "mini_timer_x = 0, "
+                  "mini_timer_y = 0, "
+                  "mini_timer_w = 0",
+                  now;
+    } catch(const Poco::Exception& exc) {
+        return exc.displayText();
+    } catch(const std::exception& ex) {
+        return ex.what();
+    } catch(const std::string& ex) {
+        return ex;
+    }
+    return last_error("ResetWindow");
 }
 
 error Database::LoadUpdateChannel(
@@ -1028,12 +1188,13 @@ error Database::LoadUserByID(
         std::string offline_data("");
         Poco::UInt64 default_pid(0);
         Poco::UInt64 default_tid(0);
+        bool collapse_entries(false);
         *session_ <<
                   "select local_id, id, default_wid, since, "
                   "fullname, "
                   "email, record_timeline, store_start_and_stop_time, "
                   "timeofday_format, duration_format, offline_data, "
-                  "default_pid, default_tid "
+                  "default_pid, default_tid, collapse_entries "
                   "from users where id = :id limit 1",
                   into(local_id),
                   into(id),
@@ -1048,6 +1209,7 @@ error Database::LoadUserByID(
                   into(offline_data),
                   into(default_pid),
                   into(default_tid),
+                  into(collapse_entries),
                   useRef(UID),
                   limit(1),
                   now;
@@ -1075,6 +1237,7 @@ error Database::LoadUserByID(
         user->SetOfflineData(offline_data);
         user->SetDefaultPID(default_pid);
         user->SetDefaultTID(default_tid);
+        user->SetCollapseEntries(collapse_entries);
     } catch(const Poco::Exception& exc) {
         return exc.displayText();
     } catch(const std::exception& ex) {
@@ -1113,7 +1276,9 @@ error Database::loadWorkspaces(
         Poco::Data::Statement select(*session_);
         select <<
                "SELECT local_id, id, uid, name, premium, "
-               "only_admins_may_create_projects, admin "
+               "only_admins_may_create_projects, admin, "
+               "projects_billable_by_default, "
+               "is_business, locked_time "
                "FROM workspaces "
                "WHERE uid = :uid "
                "ORDER BY name",
@@ -1135,6 +1300,9 @@ error Database::loadWorkspaces(
                 model->SetPremium(rs[4].convert<bool>());
                 model->SetOnlyAdminsMayCreateProjects(rs[5].convert<bool>());
                 model->SetAdmin(rs[6].convert<bool>());
+                model->SetProjectsBillableByDefault(rs[7].convert<bool>());
+                model->SetBusiness(rs[8].convert<bool>());
+                model->SetLockedTime(rs[9].convert<time_t>());
                 model->ClearDirty();
                 list->push_back(model);
                 more = rs.moveNext();
@@ -2450,7 +2618,11 @@ error Database::saveModel(
                       "update workspaces set "
                       "id = :id, uid = :uid, name = :name, premium = :premium, "
                       "only_admins_may_create_projects = "
-                      ":only_admins_may_create_projects, admin = :admin "
+                      ":only_admins_may_create_projects, admin = :admin, "
+                      "projects_billable_by_default = "
+                      ":projects_billable_by_default, "
+                      "is_business = :is_business, "
+                      "locked_time = :locked_time "
                       "where local_id = :local_id",
                       useRef(model->ID()),
                       useRef(model->UID()),
@@ -2458,6 +2630,9 @@ error Database::saveModel(
                       useRef(model->Premium()),
                       useRef(model->OnlyAdminsMayCreateProjects()),
                       useRef(model->Admin()),
+                      useRef(model->ProjectsBillableByDefault()),
+                      useRef(model->Business()),
+                      useRef(model->LockedTime()),
                       useRef(model->LocalID()),
                       now;
             error err = last_error("saveWorkspace");
@@ -2474,15 +2649,22 @@ error Database::saveModel(
             logger().trace(ss.str());
             *session_ <<
                       "insert into workspaces(id, uid, name, premium, "
-                      "only_admins_may_create_projects, admin) "
+                      "only_admins_may_create_projects, admin, "
+                      "projects_billable_by_default, "
+                      "is_business, locked_time) "
                       "values(:id, :uid, :name, :premium, "
-                      ":only_admins_may_create_projects, :admin)",
+                      ":only_admins_may_create_projects, :admin, "
+                      ":projects_billable_by_default, "
+                      ":is_business, :locked_time)",
                       useRef(model->ID()),
                       useRef(model->UID()),
                       useRef(model->Name()),
                       useRef(model->Premium()),
                       useRef(model->OnlyAdminsMayCreateProjects()),
                       useRef(model->Admin()),
+                      useRef(model->ProjectsBillableByDefault()),
+                      useRef(model->Business()),
+                      useRef(model->LockedTime()),
                       now;
             error err = last_error("saveWorkspace");
             if (err != noError) {
@@ -3127,7 +3309,8 @@ error Database::SaveUser(
                           "duration_format = :duration_format, "
                           "offline_data = :offline_data, "
                           "default_pid = :default_pid, "
-                          "default_tid = :default_tid "
+                          "default_tid = :default_tid, "
+                          "collapse_entries = :collapse_entries "
                           "where local_id = :local_id",
                           useRef(user->DefaultWID()),
                           useRef(user->Since()),
@@ -3141,6 +3324,7 @@ error Database::SaveUser(
                           useRef(user->OfflineData()),
                           useRef(user->DefaultPID()),
                           useRef(user->DefaultTID()),
+                          useRef(user->CollapseEntries()),
                           useRef(user->LocalID()),
                           now;
                 error err = last_error("SaveUser");

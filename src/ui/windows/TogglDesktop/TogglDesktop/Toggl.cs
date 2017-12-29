@@ -32,7 +32,11 @@ public static partial class Toggl
     public static string ScriptPath;
     public static string DatabasePath;
     public static string LogPath;
+#if INVS
+    public static string Env = "development";
+#else
     public static string Env = "production";
+#endif
 
 
     #endregion
@@ -65,6 +69,8 @@ public static partial class Toggl
     public delegate void DisplayApp(
         bool open);
 
+    public delegate void DisplayWSError();
+
     public delegate void DisplayError(
         string errmsg,
         bool user_error);
@@ -91,7 +97,8 @@ public static partial class Toggl
 
     public delegate void DisplayTimeEntryList(
         bool open,
-        List<TogglTimeEntryView> list);
+        List<TogglTimeEntryView> list,
+        bool show_load_more_button);
 
     public delegate void DisplayAutocomplete(
         List<TogglAutocompleteView> list);
@@ -141,9 +148,22 @@ public static partial class Toggl
     public delegate void DisplayPomodoro(
         string title, string informativeText);
 
+    public delegate void DisplayPomodoroBreak(
+        string title, string informativeText);
+
     #endregion
 
     #region api calls
+
+    public static void LoadMore()
+    {
+        toggl_load_more(ctx);
+    }
+
+    public static void SendObmAction(ulong experiment, string key)
+    {
+        toggl_add_obm_action(ctx, experiment, key, "1");
+    }
 
     public static void Clear()
     {
@@ -231,12 +251,14 @@ public static partial class Toggl
 
     public static bool Continue(string guid)
     {
+        OnUserTimeEntryStart();
         return toggl_continue(ctx, guid);
     }
 
-    public static bool ContinueLatest()
+    public static bool ContinueLatest(bool preventOnApp = false)
     {
-        return toggl_continue_latest(ctx);
+        OnUserTimeEntryStart();
+        return toggl_continue_latest(ctx, preventOnApp);
     }
 
     public static bool DeleteTimeEntry(string guid)
@@ -318,14 +340,19 @@ public static partial class Toggl
 
     #endregion
 
-    public static bool Stop()
+    public static bool Stop(bool preventOnApp = false)
     {
-        return toggl_stop(ctx);
+        return toggl_stop(ctx, preventOnApp);
     }
 
     public static bool DiscardTimeAt(string guid, UInt64 at, bool split)
     {
         return toggl_discard_time_at(ctx, guid, at, split);
+    }
+
+    public static bool DiscardTimeAndContinue(string guid, UInt64 at, bool split)
+    {
+        return toggl_discard_time_and_continue(ctx, guid, at);
     }
 
     public static bool SetSettings(TogglSettingsView settings)
@@ -413,6 +440,16 @@ public static partial class Toggl
             return false;
         }
 
+        if (!toggl_set_settings_pomodoro_break(ctx, settings.PomodoroBreak))
+        {
+            return false;
+        }
+
+        if (!toggl_set_settings_pomodoro_break_minutes(ctx, settings.PomodoroBreakMinutes))
+        {
+            return false;
+        }
+
         return toggl_timeline_toggle_recording(ctx, settings.RecordTimeline);
     }
 
@@ -441,15 +478,19 @@ public static partial class Toggl
         UInt64 task_id,
         UInt64 project_id,
         string project_guid,
-        string tags)
+        string tags,
+        bool preventOnApp = false)
     {
+        OnUserTimeEntryStart();
+
         return toggl_start(ctx,
                            description,
                            duration,
                            task_id,
                            project_id,
                            project_guid,
-                           tags);
+                           tags,
+                           preventOnApp);
     }
 
     public static string AddProject(
@@ -501,10 +542,15 @@ public static partial class Toggl
         return toggl_get_user_email(ctx);
     }
 
+    public static void FullSync()
+    {
+        toggl_fullsync(ctx);
+    }
+
     public static void Sync()
     {
         OnManualSync();
-        toggl_sync(ctx);
+        toggl_fullsync(ctx);
     }
 
     public static void SetSleep()
@@ -577,16 +623,51 @@ public static partial class Toggl
         return toggl_get_keep_end_time_fixed(ctx);
     }
 
-    public static void SetObmExperimentId(ulong id)
+    public static void SetMiniTimerX(long x)
     {
-        toggl_set_obm_experiment_nr(id);
+        toggl_set_mini_timer_x(ctx, x);
     }
 
+    public static long GetMiniTimerX()
+    {
+        return toggl_get_mini_timer_x(ctx);
+    }
+
+    public static void SetMiniTimerY(long y)
+    {
+        toggl_set_mini_timer_y(ctx, y);
+    }
+
+    public static long GetMiniTimerY()
+    {
+        return toggl_get_mini_timer_y(ctx);
+    }
+
+    public static void SetMiniTimerW(long w)
+    {
+        toggl_set_mini_timer_w(ctx, w);
+    }
+
+    public static long GetMiniTimerW()
+    {
+        return toggl_get_mini_timer_w(ctx);
+    }
+
+    public static void SetMiniTimerVisible(bool visible)
+    {
+        toggl_set_mini_timer_visible(ctx, visible);
+    }
+
+    public static bool GetMiniTimerVisible()
+    {
+        return toggl_get_mini_timer_visible(ctx);
+    }
     #endregion
 
     #region callback events
 
     public static event DisplayApp OnApp = delegate { };
+    public static event DisplayWSError OnWSError = delegate { };
     public static event DisplayError OnError = delegate { };
     public static event DisplayOnlineState OnOnlineState = delegate { };
     public static event DisplayLogin OnLogin = delegate { };
@@ -613,6 +694,7 @@ public static partial class Toggl
     public static event DisplayPromotion OnDisplayPromotion = delegate { };
     public static event DisplayObmExperiment OnDisplayObmExperiment = delegate { };
     public static event DisplayPomodoro OnDisplayPomodoro = delegate { };
+    public static event DisplayPomodoroBreak OnDisplayPomodoroBreak = delegate { };
 
     private static void listenToLibEvents()
     {
@@ -621,6 +703,14 @@ public static partial class Toggl
             using (Performance.Measure("Calling OnApp"))
             {
                 OnApp(open);
+            }
+        });
+
+        toggl_on_ws_error(ctx, () =>
+        {
+            using (Performance.Measure("Calling OnWSError"))
+            {
+                OnWSError();
             }
         });
 
@@ -671,11 +761,11 @@ public static partial class Toggl
             }
         });
 
-        toggl_on_time_entry_list(ctx, (open, first) =>
+        toggl_on_time_entry_list(ctx, (open, first, show_load_more_button) =>
         {
             using (Performance.Measure("Calling OnTimeEntryList, open: {0}", open))
             {
-                OnTimeEntryList(open, convertToTimeEntryList(first));
+                OnTimeEntryList(open, convertToTimeEntryList(first), show_load_more_button);
             }
         });
 
@@ -831,6 +921,13 @@ public static partial class Toggl
                 OnDisplayPomodoro(title, text);
             }
         });
+        toggl_on_pomodoro_break(ctx, (title, text) =>
+        {
+            using (Performance.Measure("Calling OnDisplayPomodoroBreak"))
+            {
+                OnDisplayPomodoroBreak(title, text);
+            }
+        });
     }
 
     #endregion
@@ -840,6 +937,10 @@ public static partial class Toggl
     public delegate void ManualSync();
 
     public static event ManualSync OnManualSync = delegate { };
+
+    public delegate void UserTimeEntryStart();
+
+    public static event UserTimeEntryStart OnUserTimeEntryStart = delegate { };
 
     #endregion
 
@@ -886,13 +987,13 @@ public static partial class Toggl
         toggl_set_log_level("debug");
     }
 
-    public static bool StartUI(string version, ulong? experimentId)
+    public static bool StartUI(string version, IEnumerable<ulong> experimentIds)
     {
         parseCommandlineParams();
 
-        if (experimentId.HasValue)
+        foreach (var id in experimentIds)
         {
-            toggl_set_obm_experiment_nr(experimentId.Value);
+            toggl_add_obm_experiment_nr(id);
         }
 
         ctx = toggl_context_init("windows_native_app", version);
@@ -1228,7 +1329,7 @@ public static partial class Toggl
 
     public static bool AskToDeleteEntry(string guid)
     {
-        var result = MessageBox.Show(mainWindow, "Delete time entry?", "Please confirm",
+        var result = MessageBox.Show(mainWindow, "Deleted time entries cannot be restored.", "Delete time entry?",
                                      MessageBoxButton.OKCancel, "DELETE ENTRY");
 
         if (result == MessageBoxResult.OK)
@@ -1248,5 +1349,10 @@ public static partial class Toggl
 
     #endregion
 
+
+    public static void ToggleEntriesGroup(string groupName)
+    {
+        toggl_toggle_entries_group(ctx, groupName);
+    }
 }
 }

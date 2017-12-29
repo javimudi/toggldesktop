@@ -79,6 +79,13 @@ class Database {
         const Poco::Int64 window_height,
         const Poco::Int64 window_width);
 
+    error SetMiniTimerX(const Poco::Int64 x);
+    error GetMiniTimerX(Poco::Int64 *x);
+    error SetMiniTimerY(const Poco::Int64 y);
+    error GetMiniTimerY(Poco::Int64 *y);
+    error SetMiniTimerW(const Poco::Int64 w);
+    error GetMiniTimerW(Poco::Int64 *w);
+
     error SetSettingsHasSeenBetaOffering(const bool &value);
 
     error SetSettingsUseIdleDetection(const bool &use_idle_detection);
@@ -99,6 +106,8 @@ class Database {
 
     error SetSettingsPomodoro(const bool &pomodoro);
 
+    error SetSettingsPomodoroBreak(const bool &pomodoro_break);
+
     error SetSettingsIdleMinutes(const Poco::UInt64 idle_minutes);
 
     error SetSettingsFocusOnShortcut(const bool &focus_on_shortcut);
@@ -106,6 +115,9 @@ class Database {
     error SetSettingsReminderMinutes(const Poco::UInt64 reminder_minutes);
 
     error SetSettingsPomodoroMinutes(const Poco::UInt64 pomodoro_minutes);
+
+    error SetSettingsPomodoroBreakMinutes(
+        const Poco::UInt64 pomodoro_break_minutes);
 
     error SetSettingsManualMode(const bool &manual_mode);
 
@@ -131,6 +143,12 @@ class Database {
         const bool);
 
     error GetCompactMode(
+        bool *);
+
+    error SetMiniTimerVisible(
+        const bool);
+
+    error GetMiniTimerVisible(
         bool *);
 
     error SetKeepEndTimeFixed(
@@ -234,6 +252,8 @@ class Database {
 
     error Trim(const std::string text, std::string *result);
 
+    error ResetWindow();
+
  private:
     error vacuum();
 
@@ -312,6 +332,13 @@ class Database {
         const std::string table_name,
         std::vector<T *> *list,
         std::vector<ModelChange> *changes);
+
+    error deleteAllFromTableByDate(
+        const std::string table_name,
+        const Poco::Timestamp &time);
+
+    error deleteAllSyncedTimelineEventsByDate(
+        const Poco::Timestamp &time);
 
     error deleteAllFromTableByUID(
         const std::string table_name,

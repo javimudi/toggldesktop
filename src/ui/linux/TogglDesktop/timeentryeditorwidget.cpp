@@ -20,6 +20,7 @@ projectAutocompleteNeedsUpdate(false),
 workspaceSelectNeedsUpdate(false),
 clientSelectNeedsUpdate(false),
 timer(new QTimer(this)),
+colorPicker(new ColorPicker(this)),
 duration(0),
 previousTagList("") {
     ui->setupUi(this);
@@ -28,10 +29,12 @@ previousTagList("") {
     ui->description->completer()->setCompletionMode(
         QCompleter::PopupCompletion);
     ui->description->completer()->setMaxVisibleItems(20);
+    ui->description->completer()->setFilterMode(Qt::MatchContains);
 
     ui->project->completer()->setCaseSensitivity(Qt::CaseInsensitive);
     ui->project->completer()->setCompletionMode(QCompleter::PopupCompletion);
     ui->project->completer()->setMaxVisibleItems(20);
+    ui->project->completer()->setFilterMode(Qt::MatchContains);
 
     ui->description->installEventFilter(this);
     ui->project->installEventFilter(this);
@@ -46,8 +49,8 @@ previousTagList("") {
     connect(TogglApi::instance, SIGNAL(displayLogin(bool,uint64_t)),  // NOLINT
             this, SLOT(displayLogin(bool,uint64_t)));  // NOLINT
 
-    connect(TogglApi::instance, SIGNAL(displayTimeEntryList(bool,QVector<TimeEntryView*>)),  // NOLINT
-            this, SLOT(displayTimeEntryList(bool,QVector<TimeEntryView*>)));  // NOLINT
+    connect(TogglApi::instance, SIGNAL(displayTimeEntryList(bool,QVector<TimeEntryView*>,bool)),  // NOLINT
+            this, SLOT(displayTimeEntryList(bool,QVector<TimeEntryView*>,bool)));  // NOLINT
 
     connect(TogglApi::instance, SIGNAL(displayTimeEntryEditor(bool,TimeEntryView*,QString)),  // NOLINT
             this, SLOT(displayTimeEntryEditor(bool,TimeEntryView*,QString)));  // NOLINT
@@ -67,11 +70,21 @@ previousTagList("") {
     connect(TogglApi::instance, SIGNAL(displayClientSelect(QVector<GenericView*>)),  // NOLINT
             this, SLOT(displayClientSelect(QVector<GenericView*>)));  // NOLINT
 
+    connect(TogglApi::instance, SIGNAL(setProjectColors(QVector<char*>)),  // NOLINT
+            this, SLOT(setProjectColors(QVector<char*>)));  // NOLINT
+
     connect(timer, SIGNAL(timeout()), this, SLOT(timeout()));
+
+    TogglApi::instance->getProjectColors();
 }
 
 TimeEntryEditorWidget::~TimeEntryEditorWidget() {
     delete ui;
+}
+
+void TimeEntryEditorWidget::setSelectedColor(QString color) {
+    QString style = "font-size:72px;" + color;
+    ui->colorButton->setStyleSheet(style);
 }
 
 void TimeEntryEditorWidget::displayClientSelect(
@@ -169,7 +182,8 @@ void TimeEntryEditorWidget::displayLogin(
 
 void TimeEntryEditorWidget::displayTimeEntryList(
     const bool open,
-    QVector<TimeEntryView *> list) {
+    QVector<TimeEntryView *> list,
+    const bool) {
     if (open) {
         setVisible(false);
         timer->stop();
@@ -216,6 +230,7 @@ void TimeEntryEditorWidget::displayTimeEntryEditor(
 
     guid = view->GUID;
     duration = view->DurationInSeconds;
+    confirmlessDelete = view->ConfirmlessDelete;
 
     if (duration < 0) {
         timer->start(1000);
@@ -286,13 +301,18 @@ bool TimeEntryEditorWidget::applyNewProject() {
         clientID = client.value<GenericView *>()->ID;
     }
 
+    // Get the selected project color from stylesheet
+    QString colorCode = ui->colorButton->styleSheet()
+                        .replace("font-size:72px;color:", "")
+                        .replace(";", "");
+
     QString projectGUID = TogglApi::instance->addProject(guid,
                           workspaceID,
                           clientID,
                           "",
                           ui->newProjectName->text(),
                           !ui->publicProject->isChecked(),
-                          "");
+                          colorCode);
     return !projectGUID.isEmpty();
 }
 
@@ -315,7 +335,7 @@ bool TimeEntryEditorWidget::eventFilter(QObject *object, QEvent *event) {
 }
 
 void TimeEntryEditorWidget::on_deleteButton_clicked() {
-    if (QMessageBox::Ok == QMessageBox(
+    if (confirmlessDelete || QMessageBox::Ok == QMessageBox(
         QMessageBox::Question,
         "Delete this time entry?",
         "Deleted time entries cannot be restored.",
@@ -356,6 +376,23 @@ void TimeEntryEditorWidget::on_description_currentIndexChanged(int index) {
                                                 view->TaskID,
                                                 view->ProjectID,
                                                 "");
+        if (view->Billable) {
+            TogglApi::instance->setTimeEntryBillable(guid, view->Billable);
+        }
+
+        if (!view->Tags.isEmpty() && ui->tags->count() > 0) {
+            bool tagsSet = false;
+            for (int i = 0; i < ui->tags->count(); i++) {
+                QListWidgetItem *widgetItem = ui->tags->item(i);
+                if (widgetItem->checkState() == Qt::Checked) {
+                    tagsSet = true;
+                    break;
+                }
+            }
+            if (!tagsSet) {
+                TogglApi::instance->setTimeEntryTags(guid, view->Tags);
+            }
+        }
     }
 }
 
@@ -482,3 +519,17 @@ void TimeEntryEditorWidget::on_cancelNewClientLabel_linkActivated(
     const QString &link) {
     toggleNewClientMode(false);
 }
+
+void TimeEntryEditorWidget::on_colorButton_clicked()
+{
+    int newX = window()->pos().x() + window()->width() - colorPicker->width() + 5;
+    int newY = window()->pos().y() + ui->newProject->pos().y()+80;
+
+    colorPicker->move(newX, newY);
+    colorPicker->show();
+}
+
+void TimeEntryEditorWidget::setProjectColors(QVector<char *> list) {
+    colorPicker->setColors(list);
+}
+

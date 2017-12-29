@@ -29,13 +29,23 @@ TimeEntryView *TimeEntryView::importOne(TogglTimeEntryView *view) {
     result->UpdatedAt = view->UpdatedAt;
     result->DateHeader = QString(view->DateHeader);
     result->DateDuration = QString(view->DateDuration);
-    result->DurOnly = view->DurOnly;
     result->IsHeader = view->IsHeader;
     result->CanSeeBillable = view->CanSeeBillable;
     result->CanAddProjects = view->CanAddProjects;
     result->DefaultWID = view->DefaultWID;
     result->WorkspaceName = QString(view->WorkspaceName);
     result->Error = QString(view->Error);
+    result->ConfirmlessDelete = (view->DurationInSeconds < 15
+                                 && result->Description.length() == 0
+                                 && !view->PID);
+    result->Unsynced = view->Unsynced;
+    // Grouped entries mode
+    result->Group = view->Group;
+    result->GroupOpen = view->GroupOpen;
+    result->GroupName = QString(view->GroupName);
+    result->GroupDuration = QString(view->GroupDuration);
+    result->GroupItemCount = view->GroupItemCount;
+
     return result;
 }
 

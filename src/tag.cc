@@ -33,9 +33,6 @@ void Tag::SetName(const std::string value) {
 }
 
 void Tag::LoadFromJSON(Json::Value data) {
-    if (data.isMember("guid")) {
-        SetGUID(data["guid"].asString());
-    }
     SetID(data["id"].asUInt64());
     SetName(data["name"].asString());
     SetWID(data["wid"].asUInt64());
@@ -46,7 +43,7 @@ std::string Tag::ModelName() const {
 }
 
 std::string Tag::ModelURL() const {
-    return "/api/v8/tags";
+    return "/api/v9/tags";
 }
 
 }   // namespace toggl

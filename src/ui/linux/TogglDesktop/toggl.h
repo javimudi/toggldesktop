@@ -55,7 +55,9 @@ class TogglApi : public QObject {
         const QString description,
         const QString duration,
         const uint64_t task_id,
-        const uint64_t project_id);
+        const uint64_t project_id,
+        const char_t *tags,
+        const bool_t billable);
 
     bool stop();
 
@@ -67,6 +69,8 @@ class TogglApi : public QObject {
 
     void openInBrowser();
 
+    void fullSync();
+
     void sync();
 
     bool clearCache();
@@ -76,6 +80,8 @@ class TogglApi : public QObject {
     void logout();
 
     void editPreferences();
+
+    void toggleEntriesGroup(const QString groupName);
 
     void editTimeEntry(const QString guid,
                        const QString focusedFieldName);
@@ -151,6 +157,10 @@ class TogglApi : public QObject {
     bool setSettingsReminder(const bool reminder);
     bool setSettingsIdleMinutes(const uint64_t idle_minutes);
     bool setSettingsReminderMinutes(const uint64_t reminder_minutes);
+    bool setSettingsPomodoro(const bool pomodoro);
+    bool setSettingsPomodoroMinutes(const uint64_t pomodoro_minutes);
+    bool setSettingsPomodoroBreak(const bool pomodoro_break);
+    bool setSettingsPomodoroBreakMinutes(const uint64_t pomodoro_break_minutes);
 
     void toggleTimelineRecording(
         const bool recordTimeline);
@@ -159,6 +169,15 @@ class TogglApi : public QObject {
     QString updateChannel();
 
     QString userEmail();
+
+    // keyboard shortcut saving
+    void setShowHideKey(const QString keys);
+    void setContinueStopKey(const QString keys);
+    QString getShowHideKey();
+    QString getContinueStopKey();
+
+    void getProjectColors();
+    void loadMore();
 
     bool sendFeedback(const QString topic,
                       const QString details,
@@ -184,6 +203,8 @@ class TogglApi : public QObject {
         const QString errmsg,
         const bool user_error);
 
+    void displayWSError();
+
     void displayUpdate(
         const QString url);
 
@@ -198,13 +219,18 @@ class TogglApi : public QObject {
         const QString title,
         const QString informative_text);
 
+    void displayPomodoroBreak(
+        const QString title,
+        const QString informative_text);
+
     void displayReminder(
         const QString title,
         const QString informative_text);
 
     void displayTimeEntryList(
         const bool open,
-        QVector<TimeEntryView *> list);
+        QVector<TimeEntryView *> list,
+        const bool show_load_more_button);
 
     void displayTimeEntryEditor(
         const bool open,
@@ -245,6 +271,13 @@ class TogglApi : public QObject {
     void displayWorkspaceSelect(
         QVector<GenericView *> list);
 
+    void updateShowHideShortcut();
+
+    void updateContinueStopShortcut();
+
+    void setProjectColors(
+        QVector<char *> list);
+
  private:
     void *ctx;
 
@@ -260,6 +293,7 @@ void on_display_app(const bool_t open);
 void on_display_error(
     const char *errmsg,
     const bool_t user_error);
+void on_display_ws_error();
 void on_display_update(
     const char *url);
 void on_display_online_state(
@@ -271,6 +305,9 @@ void on_display_login(
     const bool_t open,
     const uint64_t user_id);
 void on_display_pomodoro(
+    const char *title,
+    const char *informative_text);
+void on_display_pomodoro_break(
     const char *title,
     const char *informative_text);
 void on_display_reminder(
@@ -305,6 +342,8 @@ void on_display_idle_notification(
     const char *since,
     const char *duration,
     const uint64_t started);
-
+void on_project_colors(
+    const char_t *list[],
+    const uint64_t count);
 
 #endif  // SRC_UI_LINUX_TOGGLDESKTOP_TOGGL_H_

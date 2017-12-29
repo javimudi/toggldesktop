@@ -13,9 +13,9 @@
 namespace toggl {
 
 const char *known_colors[] = {
-    "#4dc3ff", "#bc85e6", "#df7baa", "#f68d38", "#b27636",
-    "#8ab734", "#14a88e", "#268bb5", "#6668b4", "#a4506c",
-    "#67412c", "#3c6526", "#094558", "#bc2d07", "#999999"
+    "#06aaf5", "#c56bff", "#ea468d", "#fb8b14", "#c7741c",
+    "#4bc800", "#04bb9b", "#e19a86", "#3750b5", "#a01aa5",
+    "#f1c33f", "#205500", "#890000", "#e20505", "#000000"
 };
 
 template<typename T, size_t N> T *end(T (&ra)[N]) {
@@ -86,21 +86,14 @@ void Project::SetColor(const std::string value) {
 std::string Project::ColorCode() const {
     int index(0);
     if (!Poco::NumberParser::tryParse(Color(), index)) {
-        return ColorCodes.back();
+        return Color();
     }
     return ColorCodes[index % ColorCodes.size()];
 }
 
 error Project::SetColorCode(const std::string color_code) {
-    for (std::size_t i = 0; i < Project::ColorCodes.size(); i++) {
-        if (Project::ColorCodes[i] == color_code) {
-            std::stringstream ss;
-            ss << i;
-            SetColor(ss.str());
-            return noError;
-        }
-    }
-    return error("invalid color code");
+    SetColor(color_code);
+    return noError;
 }
 
 void Project::SetWID(const Poco::UInt64 value) {
@@ -118,15 +111,16 @@ void Project::SetCID(const Poco::UInt64 value) {
 }
 
 void Project::LoadFromJSON(Json::Value data) {
-    if (data.isMember("guid")) {
-        SetGUID(data["guid"].asString());
+    if (data.isMember("hex_color")) {
+        SetColor(data["hex_color"].asString());
+    } else {
+        SetColor(data["color"].asString());
     }
 
     SetID(data["id"].asUInt64());
     SetName(data["name"].asString());
     SetWID(data["wid"].asUInt64());
     SetCID(data["cid"].asUInt64());
-    SetColor(data["color"].asString());
     SetActive(data["active"].asBool());
     SetBillable(data["billable"].asBool());
 }
@@ -138,16 +132,16 @@ Json::Value Project::SaveToJSON() const {
     }
     n["name"] = Formatter::EscapeJSONString(Name());
     n["wid"] = Json::UInt64(WID());
-    n["guid"] = GUID();
-    if (!CID() && !ClientGUID().empty()) {
-        n["cid"] = ClientGUID();
-    } else {
+    if (CID()) {
         n["cid"] = Json::UInt64(CID());
+    } else {
+        n["cid"] = Json::nullValue;
     }
-    n["billable"] = Billable();
+    // There is no way to set it in UI and free ws gets error when it's sent
+    // n["billable"] = Billable();
     n["is_private"] = IsPrivate();
-    n["ui_modified_at"] = Json::UInt64(UIModifiedAt());
     n["color"] = Color();
+    n["active"] = Active();
 
     return n;
 }
@@ -194,7 +188,11 @@ std::string Project::ModelName() const {
 }
 
 std::string Project::ModelURL() const {
-    return "/api/v8/projects";
+    std::stringstream relative_url;
+    relative_url << "/api/v9/workspaces/"
+                 << WID() << "/projects";
+
+    return relative_url.str();
 }
 
 }   // namespace toggl

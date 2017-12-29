@@ -23,7 +23,9 @@
 #define kTimelineUploadMaxBackoffSeconds (kTimelineUploadIntervalSeconds * 10)  // NOLINT
 
 #define kLostPasswordURL "https://toggl.com/forgot-password?desktop=true"
-#define kSupportURL "http://support.toggl.com/toggl-on-my-desktop/"
+#define kGeneralSupportURL "http://support.toggl.com/toggl-on-my-desktop/"
+#define kLinuxSupportURL "https://support.toggl.com/toggl-desktop-for-linux/"
+#define kMacSupportURL "https://support.toggl.com/toggl-desktop-for-mac-osx/"
 
 #define kContentTypeMultipartFormData "multipart/form-data"
 #define kContentTypeApplicationJSON "application/json"
@@ -61,8 +63,11 @@
 #define kPleaseSelectAWorkspace "Please select a workspace"
 #define kClientNameMustNotBeEmpty "Client name must not be empty"
 #define kProjectNameMustNotBeEmpty "Project name must not be empty"
+#define kProjectNameAlready "Project name already"
 #define kProjectNameAlreadyExists "Project name already exists"
 #define kClientNameAlreadyExists "Client name already exists"
+#define kDatabaseDiskMalformed "The database disk image is malformed"
+#define kMissingWS "You no longer have access to your last workspace"
 
 #define kModelAutotrackerRule "autotracker_rule"
 #define kModelClient "client"

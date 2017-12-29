@@ -220,6 +220,10 @@ BOOL manualMode = NO;
 											 selector:@selector(startDisplayPromotion:)
 												 name:kDisplayPromotion
 											   object:nil];
+	[[NSNotificationCenter defaultCenter] addObserver:self
+											 selector:@selector(startToggleGroup:)
+												 name:kToggleGroup
+											   object:nil];
 
 	toggl_set_environment(ctx, [self.environment UTF8String]);
 
@@ -332,7 +336,15 @@ BOOL manualMode = NO;
 	NSLog(@"didActivateNotification %@", notification);
 
 	// ignore close button
-	if (NSUserNotificationActivationTypeActionButtonClicked != notification.activationType)
+	if (NSUserNotificationActivationTypeActionButtonClicked != notification.activationType &&
+		notification.userInfo[@"pomodoro"] == nil)
+	{
+		return;
+	}
+
+	// ignore close button
+	if (NSUserNotificationActivationTypeActionButtonClicked != notification.activationType &&
+		notification.userInfo[@"pomodoro_break"] == nil)
 	{
 		return;
 	}
@@ -345,7 +357,7 @@ BOOL manualMode = NO;
 			NSNumber *project_id = notification.userInfo[@"project_id"];
 			NSNumber *task_id = notification.userInfo[@"task_id"];
 			NSLog(@"Handle autotracker notification project_id = %@, task_id = %@", project_id, task_id);
-			char_t *guid = toggl_start(ctx, "", "", task_id.longValue, project_id.longValue, 0, "");
+			char_t *guid = toggl_start(ctx, "", "", task_id.longValue, project_id.longValue, 0, "", false);
 			free(guid);
 			return;
 		}
@@ -353,7 +365,28 @@ BOOL manualMode = NO;
 		// handle pomodoro timer
 		if (notification.userInfo[@"pomodoro"] != nil)
 		{
-			toggl_stop(ctx);
+			if (NSUserNotificationActivationTypeActionButtonClicked != notification.activationType)
+			{
+				toggl_show_app(ctx);
+			}
+			else
+			{
+				toggl_continue_latest(ctx, false);
+			}
+			return;
+		}
+
+		// handle pomodoro_break timer
+		if (notification.userInfo[@"pomodoro_break"] != nil)
+		{
+			if (NSUserNotificationActivationTypeActionButtonClicked != notification.activationType)
+			{
+				toggl_show_app(ctx);
+			}
+			else
+			{
+				toggl_continue_latest(ctx, false);
+			}
 			return;
 		}
 	}
@@ -400,7 +433,13 @@ BOOL manualMode = NO;
 							 new_time_entry.TaskID,
 							 new_time_entry.ProjectID,
 							 0,
-							 tag_list);
+							 tag_list,
+							 false);
+
+	if (new_time_entry.billable)
+	{
+		toggl_set_time_entry_billable(ctx, guid, new_time_entry.billable);
+	}
 	free(guid);
 }
 
@@ -422,7 +461,8 @@ BOOL manualMode = NO;
 							 new_time_entry.TaskID,
 							 new_time_entry.ProjectID,
 							 0,
-							 0);
+							 0,
+							 false);
 	free(guid);
 }
 
@@ -439,7 +479,7 @@ BOOL manualMode = NO;
 
 	if (guid == nil)
 	{
-		toggl_continue_latest(ctx);
+		toggl_continue_latest(ctx, false);
 	}
 	else
 	{
@@ -458,7 +498,21 @@ BOOL manualMode = NO;
 {
 	NSAssert([NSThread isMainThread], @"Rendering stuff should happen on main thread");
 
-	toggl_stop(ctx);
+	toggl_stop(ctx, false);
+}
+
+- (void)startToggleGroup:(NSNotification *)notification
+{
+	[self performSelectorOnMainThread:@selector(toggleGroup:)
+						   withObject:notification.object
+						waitUntilDone:NO];
+}
+
+- (void)toggleGroup:(NSString *)key
+{
+	NSAssert([NSThread isMainThread], @"Rendering stuff should happen on main thread");
+
+	toggl_toggle_entries_group(ctx, [key UTF8String]);
 }
 
 - (void)startDisplaySettings:(NSNotification *)notification
@@ -495,7 +549,6 @@ BOOL manualMode = NO;
 			self.idleTimer = nil;
 		}
 	}
-
 
 	// Start menubar timer if its enabled
 	self.showMenuBarTimer = cmd.settings.menubar_timer;
@@ -755,6 +808,11 @@ BOOL manualMode = NO;
 
 	if (![title isEqualToString:self.statusItem.title])
 	{
+		if (self.statusItem.title.length == 0)
+		{
+			// If previous value was empty set title twice to fix cut off issue
+			[self.statusItem setTitle:title];
+		}
 		[self.statusItem setTitle:title];
 	}
 
@@ -966,7 +1024,7 @@ BOOL manualMode = NO;
 
 - (IBAction)onHelpMenuItem:(id)sender
 {
-	toggl_get_support(ctx);
+	toggl_get_support(ctx, 1);
 }
 
 - (IBAction)onLogoutMenuItem:(id)sender
@@ -1101,7 +1159,7 @@ const NSString *appName = @"osx_native_app";
 			([argument rangeOfString:@"path"].location != NSNotFound))
 		{
 			self.scriptPath = arguments[i + 1];
-			NSLog(@"script path '%@'", self.log_level);
+			NSLog(@"script path '%@'", self.scriptPath);
 			continue;
 		}
 	}
@@ -1147,11 +1205,13 @@ const NSString *appName = @"osx_native_app";
 	toggl_on_unsynced_items(ctx, on_unsynced_items);
 	toggl_on_show_app(ctx, on_app);
 	toggl_on_error(ctx, on_error);
+	toggl_on_ws_error(ctx, on_ws_error);
 	toggl_on_online_state(ctx, on_online_state);
 	toggl_on_login(ctx, on_login);
 	toggl_on_url(ctx, on_url);
 	toggl_on_reminder(ctx, on_reminder);
 	toggl_on_pomodoro(ctx, on_pomodoro);
+	toggl_on_pomodoro_break(ctx, on_pomodoro_break);
 	toggl_on_time_entry_list(ctx, on_time_entry_list);
 	toggl_on_time_entry_autocomplete(ctx, on_time_entry_autocomplete);
 	toggl_on_mini_timer_autocomplete(ctx, on_mini_timer_autocomplete);
@@ -1198,12 +1258,16 @@ const NSString *appName = @"osx_native_app";
 		freopen([logPath fileSystemRepresentation], "a+", stderr);
 	}
 
+	// Start time entry when user pastes text into the app
 	[NSEvent addLocalMonitorForEventsMatchingMask:NSKeyDownMask handler:^NSEvent * (NSEvent *theEvent) {
 		 if ([theEvent modifierFlags] & NSCommandKeyMask)
 		 {
 			 NSString *character = [theEvent charactersIgnoringModifiers];
-	         // Execute only if edit view is not opened
-			 if ([character isEqualToString:@"v"] && ![self.mainWindowController isEditOpened])
+			 NSString *windowName = [NSApp orderedWindows][0].frameAutosaveName;
+	         // Execute only if edit view is not opened and focus is on main window
+			 if ([character isEqualToString:@"v"]
+				 && ![self.mainWindowController isEditOpened]
+				 && [windowName isEqualToString:@"MainWindow"])
 			 {
 				 if (self.lastKnownRunningTimeEntry == nil || self.lastKnownRunningTimeEntry.duration_in_seconds < 0)
 				 {
@@ -1216,7 +1280,8 @@ const NSString *appName = @"osx_native_app";
 								 0,
 								 0,
 								 0,
-								 0);
+								 0,
+								 false);
 				 }
 			 }
 		 }
@@ -1445,6 +1510,11 @@ void on_reminder(const char *title, const char *informative_text)
 
 	NSUserNotificationCenter *center = [NSUserNotificationCenter defaultUserNotificationCenter];
 	[center scheduleNotification:notification];
+
+	// Remove reminder after 45 seconds
+	[center performSelector:@selector(removeDeliveredNotification:)
+				 withObject:notification
+				 afterDelay:45];
 }
 
 void on_pomodoro(const char *title, const char *informative_text)
@@ -1461,11 +1531,38 @@ void on_pomodoro(const char *title, const char *informative_text)
 	notification.userInfo = @{ @"pomodoro": @"YES" };
 
 	notification.hasActionButton = YES;
-	notification.actionButtonTitle = @"Stop";
+	notification.actionButtonTitle = @"Continue";
 	notification.otherButtonTitle = @"Close";
 
 	NSUserNotificationCenter *center = [NSUserNotificationCenter defaultUserNotificationCenter];
 	[center scheduleNotification:notification];
+
+	// Play sound
+	[[NSSound soundNamed:@"Glass"] play];
+}
+
+void on_pomodoro_break(const char *title, const char *informative_text)
+{
+	NSUserNotification *notification = [[NSUserNotification alloc] init];
+
+	// http://stackoverflow.com/questions/11676017/nsusernotification-not-showing-action-button
+	[notification setValue:@YES forKey:@"_showsButtons"];
+
+	[notification setTitle:[NSString stringWithUTF8String:title]];
+	[notification setInformativeText:[NSString stringWithUTF8String:informative_text]];
+	[notification setDeliveryDate:[NSDate dateWithTimeInterval:0 sinceDate:[NSDate date]]];
+
+	notification.userInfo = @{ @"pomodoro_break": @"YES" };
+
+	notification.hasActionButton = YES;
+	notification.actionButtonTitle = @"Continue";
+	notification.otherButtonTitle = @"Close";
+
+	NSUserNotificationCenter *center = [NSUserNotificationCenter defaultUserNotificationCenter];
+	[center scheduleNotification:notification];
+
+	// Play sound
+	[[NSSound soundNamed:@"Glass"] play];
 }
 
 void on_url(const char *url)
@@ -1474,7 +1571,8 @@ void on_url(const char *url)
 }
 
 void on_time_entry_list(const bool_t open,
-						TogglTimeEntryView *first)
+						TogglTimeEntryView *first,
+						const bool_t show_load_more)
 {
 	NSMutableArray *viewitems = [[NSMutableArray alloc] init];
 	TogglTimeEntryView *it = first;
@@ -1486,9 +1584,11 @@ void on_time_entry_list(const bool_t open,
 		[viewitems addObject:model];
 		it = it->Next;
 	}
+
 	DisplayCommand *cmd = [[DisplayCommand alloc] init];
 	cmd.open = open;
 	cmd.timeEntries = viewitems;
+	cmd.show_load_more = show_load_more;
 	[[NSNotificationCenter defaultCenter] postNotificationName:kDisplayTimeEntryList
 														object:cmd];
 }
@@ -1616,6 +1716,12 @@ void on_error(const char *errmsg, const bool_t is_user_error)
 		[Bugsnag notify:[NSException exceptionWithName:msg reason:msg userInfo:nil]
 			   withData :[NSDictionary dictionaryWithObjectsAndKeys:@"channel", channel, nil]];
 	}
+}
+
+void on_ws_error()
+{
+	[[NSNotificationCenter defaultCenter] postNotificationName:kDisplayMissingWSView
+														object:nil];
 }
 
 void on_settings(const bool_t open,

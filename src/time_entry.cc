@@ -64,6 +64,10 @@ bool TimeEntry::ResolveError(const error err) {
     return false;
 }
 
+bool TimeEntry::isNotFound(const error err) const {
+    return std::string::npos != std::string(err).find(
+        "Time entry not found");
+}
 bool TimeEntry::isMissingCreatedWith(const error err) const {
     return std::string::npos != std::string(err).find(
         "created_with needs to be provided an a valid string");
@@ -143,6 +147,12 @@ std::string TimeEntry::String() const {
         << " deleted_at=" << DeletedAt()
         << " updated_at=" << UpdatedAt();
     return ss.str();
+}
+
+void TimeEntry::SetLastStartAt(const Poco::UInt64 value) {
+    if (last_start_at_ != value) {
+        last_start_at_ = value;
+    }
 }
 
 void TimeEntry::SetDurOnly(const bool value) {
@@ -344,30 +354,29 @@ bool TimeEntry::IsToday() const {
 }
 
 void TimeEntry::LoadFromJSON(Json::Value data) {
-    Json::Value modified = data["ui_modified_at"];
-    Poco::UInt64 ui_modified_at(0);
-    if (modified.isString()) {
-        ui_modified_at = Poco::NumberParser::parseUnsigned64(
-            modified.asString());
+    // No ui_modified_at in server responses.
+    // Compare updated_at with ui_modified_at to see if ui has been changed
+    Json::Value at = data["at"];
+    Poco::UInt64 updated_at(0);
+    if (at.isString()) {
+        updated_at = Formatter::Parse8601(at.asString());
     } else {
-        ui_modified_at = modified.asUInt64();
+        updated_at = at.asUInt64();
     }
 
     if (data.isMember("id")) {
         SetID(data["id"].asUInt64());
     }
 
-    if (UIModifiedAt() > ui_modified_at) {
+    if (updated_at != 0 &&
+            (UIModifiedAt() >= updated_at ||
+             UpdatedAt() >= updated_at)) {
         std::stringstream ss;
         ss  << "Will not overwrite time entry "
             << String()
-            << " with server data because we have a newer ui_modified_at";
+            << " with server data because we have a newer or same updated_at";
         logger().debug(ss.str());
         return;
-    }
-
-    if (data.isMember("guid")) {
-        SetGUID(data["guid"].asString());
     }
 
     if (data.isMember("tags")) {
@@ -424,7 +433,19 @@ Json::Value TimeEntry::SaveToJSON() const {
     } else {
         n["pid"] = Json::UInt64(PID());
     }
-    n["tid"] = Json::UInt64(TID());
+
+    if (PID()) {
+        n["pid"] = Json::UInt64(PID());
+    } else {
+        n["pid"] = Json::nullValue;
+    }
+
+    if (TID()) {
+        n["tid"] = Json::UInt64(TID());
+    } else {
+        n["tid"] = Json::nullValue;
+    }
+
     n["start"] = StartString();
     if (Stop()) {
         n["stop"] = StopString();
@@ -436,11 +457,17 @@ Json::Value TimeEntry::SaveToJSON() const {
     n["created_with"] = Formatter::EscapeJSONString(CreatedWith());
 
     Json::Value tag_nodes;
-    for (std::vector<std::string>::const_iterator it = TagNames.begin();
-            it != TagNames.end();
-            it++) {
-        std::string tag_name = Formatter::EscapeJSONString(*it);
-        tag_nodes.append(Json::Value(tag_name));
+    if (TagNames.size() > 0) {
+
+        for (std::vector<std::string>::const_iterator it = TagNames.begin();
+                it != TagNames.end();
+                it++) {
+            std::string tag_name = Formatter::EscapeJSONString(*it);
+            tag_nodes.append(Json::Value(tag_name));
+        }
+    } else {
+        Json::Reader reader;
+        reader.parse("[]", tag_nodes);
     }
     n["tags"] = tag_nodes;
 
@@ -469,7 +496,15 @@ std::string TimeEntry::ModelName() const {
 }
 
 std::string TimeEntry::ModelURL() const {
-    return "/api/v8/time_entries";
+    std::stringstream relative_url;
+    relative_url << "/api/v9/workspaces/"
+                 << WID() << "/time_entries";
+
+    if (ID()) {
+        relative_url << "/" << ID();
+    }
+
+    return relative_url.str();
 }
 
 }   // namespace toggl

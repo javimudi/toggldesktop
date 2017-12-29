@@ -46,7 +46,8 @@ Project *User::CreateProject(
     const std::string client_guid,
     const std::string project_name,
     const bool is_private,
-    const std::string project_color) {
+    const std::string project_color,
+    const bool billable) {
 
     Project *p = new Project();
     p->SetWID(workspace_id);
@@ -56,6 +57,7 @@ Project *User::CreateProject(
     p->SetUID(ID());
     p->SetActive(true);
     p->SetPrivate(is_private);
+    p->SetBillable(billable);
     if (!project_color.empty()) {
         p->SetColorCode(project_color);
     }
@@ -135,7 +137,6 @@ TimeEntry *User::Start(
 
     EnsureWID(te);
 
-    te->SetDurOnly(!StoreStartAndStopTime());
     te->SetUIModified();
 
     related.TimeEntries.push_back(te);
@@ -160,27 +161,21 @@ TimeEntry *User::Continue(
 
     Stop();
 
-    if (existing->DurOnly() && existing->IsToday()) {
-        existing->SetDurationInSeconds(
-            -time(0) + existing->DurationInSeconds());
-        existing->SetUIModified();
-        return existing;
-    }
+    time_t now = time(0);
 
     TimeEntry *result = new TimeEntry();
     result->SetCreatedWith(HTTPSClient::Config.UserAgent());
     result->SetDescription(existing->Description());
-    result->SetDurOnly(existing->DurOnly());
     result->SetWID(existing->WID());
     result->SetPID(existing->PID());
     result->SetTID(existing->TID());
     result->SetBillable(existing->Billable());
     result->SetTags(existing->Tags());
     result->SetUID(ID());
-    result->SetStart(time(0));
+    result->SetStart(now);
 
     if (!manual_mode) {
-        result->SetDurationInSeconds(-time(0));
+        result->SetDurationInSeconds(-now);
     }
 
     result->SetCreatedWith(HTTPSClient::Config.UserAgent());
@@ -319,6 +314,13 @@ void User::SetDefaultTID(const Poco::UInt64 value) {
     }
 }
 
+void User::SetCollapseEntries(const bool value) {
+    if (collapse_entries_ != value) {
+        collapse_entries_ = value;
+        SetDirty();
+    }
+}
+
 // Stop a time entry, mark it as dirty.
 // Note that there may be multiple TE-s running. If there are,
 // all of them are stopped (multi-tracking is not supported by Toggl).
@@ -355,11 +357,11 @@ TimeEntry *User::DiscardTimeAt(
     if (te && split_into_new_entry) {
         TimeEntry *split = new TimeEntry();
         split->SetCreatedWith(HTTPSClient::Config.UserAgent());
-        split->SetDurOnly(te->DurOnly());
         split->SetUID(ID());
         split->SetStart(at);
         split->SetDurationInSeconds(-at);
         split->SetUIModified();
+        split->SetWID(te->WID());
         related.TimeEntries.push_back(split);
         return split;
     }
@@ -390,12 +392,6 @@ bool User::HasValidSinceDate() const {
                          - (60 * Poco::Timespan::DAYS);
     Poco::UInt64 min_allowed = ts.epochTime();
     if (Since() < min_allowed) {
-        return false;
-    }
-
-    // too new
-    Poco::UInt64 now = time(0);
-    if (Since() > now) {
         return false;
     }
 
@@ -616,6 +612,12 @@ error User::LoadUserAndRelatedDataFromJSONString(
         return error("Failed to LoadUserAndRelatedDataFromJSONString");
     }
 
+    // Handle missing workspace issue. If default wid is missing there are no workspaces
+
+    if (!root["data"].isMember("default_wid")) {
+        return error("You no longer have access to your last workspace"); // NOLINT
+    }
+
     SetSince(root["since"].asUInt64());
 
     Poco::Logger &logger = Poco::Logger::get("json");
@@ -624,6 +626,28 @@ error User::LoadUserAndRelatedDataFromJSONString(
     logger.debug(s.str());
 
     loadUserAndRelatedDataFromJSON(root["data"], including_related_data);
+
+    return noError;
+}
+
+error User::LoadTimeEntriesFromJSONString(const std::string& json) {
+    if (json.empty()) {
+        return noError;
+    }
+
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(json, root)) {
+        return error("Failed to LoadTimeEntriesFromJSONString");
+    }
+
+    std::set<Poco::UInt64> alive;
+
+    for (unsigned int i = 0; i < root.size(); i++) {
+        loadUserTimeEntryFromJSON(root[i], &alive);
+    }
+
+    deleteZombies(related.TimeEntries, alive);
 
     return noError;
 }
@@ -888,6 +912,16 @@ void User::loadUserTimeEntryFromJSON(
     model->EnsureGUID();
 }
 
+bool User::LoadUserPreferencesFromJSON(
+    Json::Value data) {
+    if (data.isMember("CollapseTimeEntries") && data["CollapseTimeEntries"].asBool() != CollapseEntries()) {
+        SetCollapseEntries(data["CollapseTimeEntries"].asBool());
+        return true;
+    }
+    return false;
+}
+
+
 error User::UserID(
     const std::string json_data_string,
     Poco::UInt64 *result) {
@@ -917,40 +951,12 @@ error User::LoginToken(
 }
 
 error User::UpdateJSON(
-    std::vector<Client *> * const clients,
-    std::vector<Project *> * const projects,
     std::vector<TimeEntry *> * const time_entries,
     std::string *result) const {
 
-    poco_check_ptr(clients);
-    poco_check_ptr(projects);
     poco_check_ptr(time_entries);
 
     Json::Value c;
-
-    // First, clients, because projects depend on clients
-    for (std::vector<Client *>::const_iterator it =
-        clients->begin();
-            it != clients->end(); it++) {
-        Json::Value update;
-        error err = (*it)->BatchUpdateJSON(&update);
-        if (err != noError) {
-            return err;
-        }
-        c.append(update);
-    }
-
-    // First, projects, because time entries depend on projects
-    for (std::vector<Project *>::const_iterator it =
-        projects->begin();
-            it != projects->end(); it++) {
-        Json::Value update;
-        error err = (*it)->BatchUpdateJSON(&update);
-        if (err != noError) {
-            return err;
-        }
-        c.append(update);
-    }
 
     // Time entries go last
     for (std::vector<TimeEntry *>::const_iterator it =
@@ -1247,7 +1253,7 @@ std::string User::ModelName() const {
 }
 
 std::string User::ModelURL() const {
-    return "/api/v8/me";
+    return "/api/v9/me";
 }
 
 template<class T>

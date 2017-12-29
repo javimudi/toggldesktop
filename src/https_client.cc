@@ -103,7 +103,7 @@ void ServerStatus::runActivity() {
         HTTPSClient client;
         HTTPSRequest req;
         req.host = urls::API();
-        req.relative_url = "/api/v8/status";
+        req.relative_url = "/api/v9/status";
 
         HTTPSResponse resp = client.Get(req);
         if (noError != resp.err) {
@@ -243,6 +243,18 @@ HTTPSResponse HTTPSClient::GetFile(
     return request(req);
 }
 
+HTTPSResponse HTTPSClient::Delete(
+    HTTPSRequest req) {
+    req.method = Poco::Net::HTTPRequest::HTTP_DELETE;
+    return request(req);
+}
+
+HTTPSResponse HTTPSClient::Put(
+    HTTPSRequest req) {
+    req.method = Poco::Net::HTTPRequest::HTTP_PUT;
+    return request(req);
+}
+
 HTTPSResponse HTTPSClient::request(
     HTTPSRequest req) {
     HTTPSResponse resp = makeHttpRequest(req);
@@ -362,7 +374,6 @@ HTTPSResponse HTTPSClient::makeHttpRequest(
             poco_req.setContentType(kContentTypeApplicationJSON);
         }
         poco_req.set("User-Agent", HTTPSClient::Config.UserAgent());
-        poco_req.setChunkedTransferEncoding(true);
 
         Poco::Net::HTTPBasicCredentials cred(
             req.basic_auth_username, req.basic_auth_password);
@@ -383,8 +394,11 @@ HTTPSResponse HTTPSClient::makeHttpRequest(
                 pBuff->pubseekoff(0, std::ios::end, std::ios::in);
             pBuff->pubseekpos(0, std::ios::in);
 
-            poco_req.setContentLength(size);
-            poco_req.set("Content-Encoding", "gzip");
+            if (req.method != Poco::Net::HTTPRequest::HTTP_GET) {
+                poco_req.setContentLength(size);
+                poco_req.set("Content-Encoding", "gzip");
+                poco_req.setChunkedTransferEncoding(true);
+            }
 
             session.sendRequest(poco_req) << pBuff << std::flush;
         } else {

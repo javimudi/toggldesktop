@@ -115,12 +115,6 @@
 		self.isHeader = YES;
 	}
 
-	self.durOnly = NO;
-	if (te->DurOnly)
-	{
-		self.durOnly = YES;
-	}
-
 	self.CanAddProjects = te->CanAddProjects;
 	self.DefaultWID = te->DefaultWID;
 	self.CanSeeBillable = te->CanSeeBillable;
@@ -140,6 +134,39 @@
 	{
 		self.Error = nil;
 	}
+	// If description is empty, project is empty and duration is less than 15 seconds delete without confirmation
+	if ([self.Description length] == 0
+		&& self.duration_in_seconds < 15
+		&& (self.ProjectAndTaskLabel == nil || [self.ProjectAndTaskLabel length] == 0))
+	{
+		self.confirmlessDelete = YES;
+	}
+	else
+	{
+		self.confirmlessDelete = NO;
+	}
+
+	// Grouped mode
+
+	// If this entry is group header
+	self.Group = NO;
+	if (te->Group)
+	{
+		self.Group = YES;
+	}
+	self.GroupOpen = NO;
+	if (te->GroupOpen)
+	{
+		self.GroupOpen = YES;
+	}
+	self.GroupName = [NSString stringWithUTF8String:te->GroupName];
+	self.GroupDuration = [NSString stringWithUTF8String:te->GroupDuration];
+	self.GroupItemCount = te->GroupItemCount;
+}
+
+- (void)setLoadMore
+{
+	self.loadMore = YES;
 }
 
 - (NSString *)description

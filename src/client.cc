@@ -14,7 +14,11 @@ std::string Client::ModelName() const {
 }
 
 std::string Client::ModelURL() const {
-    return "/api/v8/clients";
+    std::stringstream relative_url;
+    relative_url << "/api/v9/workspaces/"
+                 << WID() << "/clients";
+
+    return relative_url.str();
 }
 
 std::string Client::String() const {
@@ -42,11 +46,6 @@ void Client::SetWID(const Poco::UInt64 value) {
 }
 
 void Client::LoadFromJSON(Json::Value data) {
-    std::string guid = data["guid"].asString();
-    if (!guid.empty()) {
-        SetGUID(guid);
-    }
-
     SetID(data["id"].asUInt64());
     SetName(data["name"].asString());
     SetWID(data["wid"].asUInt64());

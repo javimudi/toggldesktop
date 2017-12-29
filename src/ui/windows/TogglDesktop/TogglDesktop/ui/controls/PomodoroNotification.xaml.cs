@@ -1,4 +1,5 @@
 ﻿
+using System;
 using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -18,6 +19,7 @@ namespace TogglDesktop
             this.InitializeComponent();
 
             Toggl.OnDisplayPomodoro += this.onDisplayPomodoro;
+            Toggl.OnDisplayPomodoroBreak += this.onDisplayPomodoroBreak;
         }
 
         private void onDisplayPomodoro(string title, string informativetext)
@@ -31,6 +33,23 @@ namespace TogglDesktop
             this.RemoveFromParent();
 
             this.icon.ShowCustomBalloon(this, PopupAnimation.Slide, null);
+
+            System.Media.SystemSounds.Asterisk.Play();
+        }
+
+        private void onDisplayPomodoroBreak(string title, string informativetext)
+        {
+            if (this.TryBeginInvoke(onDisplayPomodoroBreak, title, informativetext))
+                return;
+
+            this.reminderText.Text = informativetext;
+            this.titleText.Text = title;
+
+            this.RemoveFromParent();
+
+            this.icon.ShowCustomBalloon(this, PopupAnimation.Slide, null);
+
+            System.Media.SystemSounds.Asterisk.Play();
         }
 
         private void onNotificationMouseDown(object sender, MouseButtonEventArgs e)
@@ -38,11 +57,19 @@ namespace TogglDesktop
             this.icon.CloseBalloon();
         }
 
-        private void onStopButtonClick(object sender, RoutedEventArgs e)
+        private void onContinueButtonClick(object sender, RoutedEventArgs e)
         {
             this.icon.CloseBalloon();
-            Toggl.Stop();
+            Toggl.ContinueLatest(true);
+        }
+
+        private void onStartNewButtonClick(object sender, RoutedEventArgs e)
+        {
+            this.icon.CloseBalloon();
+            var guid = Toggl.Start("", "", 0, 0, "", "", true);
             this.mainWindow.ShowOnTop();
+            if (guid != null)
+                Toggl.Edit(guid, true, Toggl.Description);
         }
     }
 }

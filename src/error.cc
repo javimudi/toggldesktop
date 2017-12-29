@@ -200,6 +200,9 @@ bool IsUserError(const error err) {
     if (err.find(kClientNameAlreadyExists) != std::string::npos) {
         return true;
     }
+    if (err.find(kProjectNameAlreadyExists) != std::string::npos) {
+        return true;
+    }
     return false;
 }
 
@@ -240,6 +243,9 @@ std::string MakeErrorActionable(const error err) {
     }
     if (err.find(kMissingWorkspaceID) != std::string::npos) {
         return "Please select a project";
+    }
+    if (err.find(kDatabaseDiskMalformed) != std::string::npos) {
+        return "Local database is corrupt. Please clear local data to recreate local database.";
     }
     return err;
 }

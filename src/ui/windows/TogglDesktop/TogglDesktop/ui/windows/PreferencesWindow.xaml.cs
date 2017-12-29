@@ -119,6 +119,9 @@ namespace TogglDesktop
             this.enablePomodoroCheckBox.IsChecked = settings.Pomodoro;
             this.pomodoroTimerDuration.Text = settings.PomodoroMinutes.ToString();
 
+            this.enablePomodoroBreakCheckBox.IsChecked = settings.PomodoroBreak;
+            this.pomodoroBreakTimerDuration.Text = settings.PomodoroBreakMinutes.ToString();
+
             this.recordTimelineCheckBox.IsChecked = settings.RecordTimeline;
             this.onTopCheckBox.IsChecked = settings.OnTop;
 
@@ -319,6 +322,9 @@ namespace TogglDesktop
 
                 Pomodoro = isChecked(this.enablePomodoroCheckBox),
                 PomodoroMinutes = toULong(this.pomodoroTimerDuration.Text),
+
+                PomodoroBreak = isChecked(this.enablePomodoroBreakCheckBox),
+                PomodoroBreakMinutes = toULong(this.pomodoroBreakTimerDuration.Text),
 
                 #endregion
 
@@ -597,7 +603,11 @@ namespace TogglDesktop
 
         private void defaultProjectTextBox_OnLostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
         {
-            if (!string.IsNullOrEmpty(this.selectedDefaultProject.ProjectLabel))
+            if (this.defaultProjectTextBox.Text == "")
+            {
+                this.selectDefaultProject(null);
+            }
+            else if (!string.IsNullOrEmpty(this.selectedDefaultProject.ProjectLabel))
             {
                 this.selectDefaultProject(this.selectedDefaultProject);
             }

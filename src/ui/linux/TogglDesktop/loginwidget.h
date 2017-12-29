@@ -29,13 +29,16 @@ class LoginWidget : public QWidget {
  private slots:  // NOLINT
     void on_login_clicked();
 
+    void displayWSError();
+
     void displayLogin(
         const bool open,
         const uint64_t user_id);
 
     void displayTimeEntryList(
         const bool open,
-        QVector<TimeEntryView *> list);
+        QVector<TimeEntryView *> list,
+        const bool show_load_more_button);
 
     void on_googleLogin_linkActivated(const QString &link);
 

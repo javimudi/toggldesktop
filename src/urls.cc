@@ -16,21 +16,21 @@ void SetUseStagingAsBackend(const bool value) {
 
 std::string API() {
     if (use_staging_as_backend) {
-        return "https://next.toggl.com";
+        return "https://toggl.space";
     }
-    return "https://www.toggl.com";
+    return "https://desktop.toggl.com";
 }
 
 std::string TimelineUpload() {
     if (use_staging_as_backend) {
-        return "https://next.toggl.com";
+        return "https://toggl.space";
     }
     return "https://timeline.toggl.com";
 }
 
 std::string WebSocket() {
     if (use_staging_as_backend) {
-        return "https://fubar-ws.toggl.com";
+        return "https://stream.toggl.space";
     }
     return "https://stream.toggl.com";
 }

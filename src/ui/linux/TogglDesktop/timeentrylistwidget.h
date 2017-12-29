@@ -23,18 +23,24 @@ class TimeEntryListWidget : public QWidget {
     ~TimeEntryListWidget();
 
  private slots:  // NOLINT
+
+    void displayWSError();
+
     void displayLogin(
         const bool open,
         const uint64_t user_id);
 
     void displayTimeEntryList(
         const bool open,
-        QVector<TimeEntryView *> list);
+        QVector<TimeEntryView *> list,
+        const bool show_load_more_button);
 
     void displayTimeEntryEditor(
         const bool open,
         TimeEntryView *view,
         const QString focused_field_name);
+
+    void showLoadMoreButton(int size);
 
     void on_blankView_linkActivated(const QString &link);
 

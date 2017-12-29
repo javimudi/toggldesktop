@@ -96,6 +96,7 @@ class Context : public TimelineDatasource {
     // Close connections and wait for tasks to finish
     void Shutdown();
 
+    void FullSync();
     void Sync();
     void TimelineUpdateServerSettings();
     error SendFeedback(Feedback);
@@ -139,7 +140,9 @@ class Context : public TimelineDatasource {
 
     error SetSettingsReminder(const bool reminder);
 
-    error SetSettingsPomodoro(const bool reminder);
+    error SetSettingsPomodoro(const bool pomodoro);
+
+    error SetSettingsPomodoroBreak(const bool pomodoro_break);
 
     error SetSettingsIdleMinutes(const Poco::UInt64 idle_minutes);
 
@@ -148,6 +151,9 @@ class Context : public TimelineDatasource {
     error SetSettingsReminderMinutes(const Poco::UInt64 reminder_minutes);
 
     error SetSettingsPomodoroMinutes(const Poco::UInt64 pomodoro_minutes);
+
+    error SetSettingsPomodoroBreakMinutes(
+        const Poco::UInt64 pomodoro_break_minutes);
 
     error SetSettingsManualMode(const bool manual_mode);
 
@@ -170,6 +176,11 @@ class Context : public TimelineDatasource {
         const bool);
 
     bool GetCompactMode();
+
+    void SetMiniTimerVisible(
+        const bool);
+
+    bool GetMiniTimerVisible();
 
     void SetKeepEndTimeFixed(
         const bool);
@@ -234,6 +245,22 @@ class Context : public TimelineDatasource {
         const int64_t window_height,
         const int64_t window_width);
 
+    Poco::Int64 GetMiniTimerX();
+
+    void SetMiniTimerX(
+        const int64_t x);
+
+    Poco::Int64 GetMiniTimerY();
+
+    void SetMiniTimerY(
+        const int64_t y);
+
+    Poco::Int64 GetMiniTimerW();
+
+    void SetMiniTimerW(
+        const int64_t w);
+
+
     error Login(
         const std::string email,
         const std::string password);
@@ -256,9 +283,10 @@ class Context : public TimelineDatasource {
         const Poco::UInt64 task_id,
         const Poco::UInt64 project_id,
         const std::string project_guid,
-        const std::string tags);
+        const std::string tags,
+        const bool prevent_on_app);
 
-    TimeEntry *ContinueLatest();
+    TimeEntry *ContinueLatest(const bool prevent_on_app);
 
     TimeEntry *Continue(
         const std::string GUID);
@@ -308,7 +336,7 @@ class Context : public TimelineDatasource {
         const std::string GUID,
         const std::string value);
 
-    error Stop();
+    error Stop(const bool prevent_on_app);
 
     error DiscardTimeAt(
         const std::string GUID,
@@ -373,6 +401,8 @@ class Context : public TimelineDatasource {
         idle_.SetIdleSeconds(idle_seconds, user_);
     }
 
+    void LoadMore();
+
     static void SetLogPath(const std::string path);
 
     void SetQuit() {
@@ -403,10 +433,14 @@ class Context : public TimelineDatasource {
         const int64_t promotion_type,
         const int64_t promotion_response);
 
+    error ToggleEntriesGroup(
+        std::string name);
+
  protected:
     void uiUpdaterActivity();
     void checkReminders();
     void reminderActivity();
+    void syncerActivity();
 
  private:
     error updateURL(std::string *result);
@@ -436,6 +470,7 @@ class Context : public TimelineDatasource {
     void onPeriodicSync(Poco::Util::TimerTask& task);  // NOLINT
     void onTrackSettingsUsage(Poco::Util::TimerTask& task);  // NOLINT
     void onWake(Poco::Util::TimerTask& task);  // NOLINT
+    void onLoadMore(Poco::Util::TimerTask& task); // NOLINT
 
     void startPeriodicUpdateCheck();
     void executeUpdateCheck();
@@ -457,6 +492,8 @@ class Context : public TimelineDatasource {
     void displayReminder();
 
     void displayPomodoro();
+
+    void displayPomodoroBreak();
 
     void updateUI(const UIElements &elements);
 
@@ -492,10 +529,29 @@ class Context : public TimelineDatasource {
 
     error pullAllUserData(TogglClient *https_client);
     error pullChanges(TogglClient *https_client);
+    error pullUserPreferences(
+        TogglClient* toggl_client);
 
     error pushChanges(
         TogglClient *https_client,
         bool *had_something_to_push);
+    error pushClients(
+        std::vector<Client *> clients,
+        std::string api_token,
+        TogglClient toggl_client);
+    error pushProjects(
+        std::vector<Project *> projects,
+        std::vector<Client *> clients,
+        std::string api_token,
+        TogglClient toggl_client);
+    error pushEntries(
+        std::map<std::string, BaseModel *> models,
+        std::vector<TimeEntry *> time_entries,
+        std::string api_token,
+        TogglClient toggl_client);
+    error updateEntryProjects(
+        std::vector<Project *> projects,
+        std::vector<TimeEntry *> time_entries);
     static error signup(
         TogglClient *https_client,
         const std::string email,
@@ -507,6 +563,17 @@ class Context : public TimelineDatasource {
         const std::string password,
         std::string *user_data,
         const Poco::UInt64 since);
+
+    bool isTimeEntryLocked(TimeEntry* te);
+    bool isTimeLockedInWorkspace(time_t t, Workspace* ws);
+    bool canChangeStartTimeTo(TimeEntry* te, time_t t);
+    bool canChangeProjectTo(TimeEntry* te, Project* p);
+
+    error logAndDisplayUserTriedEditingLockedEntry();
+
+    error pullWorkspacePreferences(TogglClient* https_client);
+    error pullWorkspacePreferences(TogglClient* https_client,
+                                   Workspace *workspace, std::string* json);
 
     error pushObmAction();
 
@@ -560,8 +627,11 @@ class Context : public TimelineDatasource {
     Poco::Int64 sync_interval_seconds_;
     Poco::UInt64 last_tracking_reminder_time_;
     Poco::UInt64 last_pomodoro_reminder_time_;
+    Poco::UInt64 last_pomodoro_break_reminder_time_;
 
     bool update_check_disabled_;
+
+    bool had_something_to_push_;
 
     Poco::LocalDateTime last_time_entry_list_render_at_;
 
@@ -572,6 +642,9 @@ class Context : public TimelineDatasource {
 
     Poco::Mutex reminder_m_;
     Poco::Activity<Context> reminder_;
+
+    Poco::Mutex syncer_m_;
+    Poco::Activity<Context> syncer_;
 
     Analytics analytics_;
 
@@ -584,6 +657,13 @@ class Context : public TimelineDatasource {
     std::set<std::string> autotracker_titles_;
 
     HelpDatabase help_database_;
+
+    TimeEntry *pomodoro_break_entry_;
+
+    // To cache grouped entries open/close status
+    std::map<std::string, bool_t> entry_groups;
+
+    bool ws_missing_;
 };
 
 void on_websocket_message(

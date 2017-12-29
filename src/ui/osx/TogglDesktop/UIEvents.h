@@ -17,6 +17,7 @@ extern NSString *const kCommandContinue;
 // Display events, UI <- backend
 extern NSString *const kDisplayApp;
 extern NSString *const kDisplayTimeEntryList;
+extern NSString *const kDisplayMissingWSView;
 extern NSString *const kDisplayTimeEntryAutocomplete;
 extern NSString *const kDisplayMinitimerAutocomplete;
 extern NSString *const kDisplayProjectAutocomplete;
@@ -49,6 +50,7 @@ extern NSString *const kEscapeListing;
 extern NSString *const kToggleManualMode;
 extern NSString *const kToggleTimerMode;
 extern NSString *const kSetProjectColors;
+extern NSString *const kToggleGroup;
 
 const char *kFocusedFieldNameDuration;
 const char *kFocusedFieldNameDescription;

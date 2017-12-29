@@ -51,6 +51,11 @@ void TimeEntry::Fill(toggl::TimeEntry * const model) {
     DurOnly = model->DurOnly();
     Error = model->ValidationError();
     Unsynced = model->Unsynced();
+
+    std::stringstream ss;
+    ss << DateHeader << model->Description() << model->PID()
+       << model->TID() << model->Billable() << model->Tags();
+    GroupName = ss.str();
 }
 
 bool Autocomplete::operator == (const Autocomplete& a) const {
@@ -167,6 +172,11 @@ error GUI::DisplayError(const error err) {
     return err;
 }
 
+error GUI::DisplayWSError() {
+    on_display_ws_error_();
+    return noError;
+}
+
 error GUI::VerifyCallbacks() {
     logger().debug("VerifyCallbacks");
     error err = findMissingCallbacks();
@@ -231,6 +241,9 @@ error GUI::findMissingCallbacks() {
     if (!on_display_pomodoro_) {
         return error("!on_display_pomodoro_");
     }
+    if (!on_display_pomodoro_break_) {
+        return error("!on_display_pomodoro_break_");
+    }
     return noError;
 }
 
@@ -253,6 +266,19 @@ void GUI::DisplayPomodoro(const Poco::UInt64 minutes) {
 
     char_t *s2 = copy_string(ss.str());
     on_display_pomodoro_(s1, s2);
+    free(s1);
+    free(s2);
+}
+
+void GUI::DisplayPomodoroBreak(const Poco::UInt64 minutes) {
+    logger().debug("DisplayPomodoroBreak");
+    char_t *s1 = copy_string("Pomodoro Break Timer");
+
+    std::stringstream ss;
+    ss << "Hope you enjoyed your " << minutes << "-minutes break.";
+
+    char_t *s2 = copy_string(ss.str());
+    on_display_pomodoro_break_(s1, s2);
     free(s1);
     free(s2);
 }
@@ -371,7 +397,8 @@ void GUI::DisplayProjectAutocomplete(
 }
 
 void GUI::DisplayTimeEntryList(const bool open,
-                               const std::vector<view::TimeEntry> list) {
+                               const std::vector<view::TimeEntry> list,
+                               const bool show_load_more_button) {
     Poco::Stopwatch stopwatch;
     stopwatch.start();
     {
@@ -397,7 +424,7 @@ void GUI::DisplayTimeEntryList(const bool open,
         first->IsHeader = true;
     }
 
-    on_display_time_entry_list_(open, first);
+    on_display_time_entry_list_(open, first, show_load_more_button);
 
     time_entry_view_item_clear(first);
 

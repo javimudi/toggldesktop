@@ -17,9 +17,11 @@
 #include <QSettings>  // NOLINT
 #include <QVBoxLayout>  // NOLINT
 #include <QStatusBar>  // NOLINT
+#include <QPushButton>  // NOLINT
 
 #include "./toggl.h"
 #include "./errorviewcontroller.h"
+#include "./missingwswidget.h"
 #include "./loginwidget.h"
 #include "./timeentrylistwidget.h"
 #include "./timeentryeditorwidget.h"
@@ -51,7 +53,8 @@ MainWindowController::MainWindowController(
   reminder(false),
   pomodoro(false),
   script(scriptPath),
-  ui_started(false) {
+  ui_started(false),
+  reminderPopup(0) {
     TogglApi::instance->setEnvironment(APP_ENVIRONMENT);
 
     ui->setupUi(this);
@@ -60,6 +63,7 @@ MainWindowController::MainWindowController(
 
     QVBoxLayout *verticalLayout = new QVBoxLayout();
     verticalLayout->addWidget(new ErrorViewController());
+    verticalLayout->addWidget(new MissingWSWidget());
     verticalLayout->addWidget(new LoginWidget());
     verticalLayout->addWidget(new TimeEntryListWidget());
     verticalLayout->addWidget(new TimeEntryEditorWidget());
@@ -83,6 +87,11 @@ MainWindowController::MainWindowController(
 
     connect(TogglApi::instance, SIGNAL(displayReminder(QString,QString)),  // NOLINT
             this, SLOT(displayReminder(QString,QString)));  // NOLINT
+    connect(TogglApi::instance, SIGNAL(displayPomodoro(QString,QString)),  // NOLINT
+            this, SLOT(displayPomodoro(QString,QString)));  // NOLINT
+
+    connect(TogglApi::instance, SIGNAL(displayPomodoroBreak(QString,QString)),  // NOLINT
+            this, SLOT(displayPomodoroBreak(QString,QString)));  // NOLINT
 
     connect(TogglApi::instance, SIGNAL(displayUpdate(QString)),  // NOLINT
             this, SLOT(displayUpdate(QString)));  // NOLINT
@@ -90,6 +99,11 @@ MainWindowController::MainWindowController(
     connect(TogglApi::instance, SIGNAL(displayOnlineState(int64_t)),  // NOLINT
             this, SLOT(displayOnlineState(int64_t)));  // NOLINT
 
+    connect(TogglApi::instance, SIGNAL(updateShowHideShortcut()),  // NOLINT
+            this, SLOT(updateShowHideShortcut()));  // NOLINT
+
+    connect(TogglApi::instance, SIGNAL(updateContinueStopShortcut()),  // NOLINT
+            this, SLOT(updateContinueStopShortcut()));  // NOLINT
 
     hasTrayIconCached = hasTrayIcon();
     if (hasTrayIconCached) {
@@ -101,6 +115,7 @@ MainWindowController::MainWindowController(
         trayIcon = new QSystemTrayIcon(this);
     }
 
+    setShortcuts();
     connectMenuActions();
     enableMenuActions();
 
@@ -110,6 +125,9 @@ MainWindowController::MainWindowController(
     } else {
         setWindowIcon(icon);
     }
+
+    connect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
+            this, SLOT(toggleWindow(QSystemTrayIcon::ActivationReason)));
 }
 
 MainWindowController::~MainWindowController() {
@@ -117,6 +135,16 @@ MainWindowController::~MainWindowController() {
     togglApi = 0;
 
     delete ui;
+}
+
+void MainWindowController::toggleWindow(QSystemTrayIcon::ActivationReason r) {
+    if (r == QSystemTrayIcon::Trigger) {
+        if (!this->isVisible()) {
+            this->show();
+        } else {
+            this->hide();
+        }
+    }
 }
 
 void MainWindowController::displayOnlineState(
@@ -147,11 +175,51 @@ void MainWindowController::displayPomodoro(
     }
     pomodoro = true;
 
-    QMessageBox(
-        QMessageBox::Information,
-        title,
-        informative_text,
-        QMessageBox::Ok).exec();
+    QMessageBox msgBox;
+    msgBox.setWindowTitle("Pomodoro Timer");
+    msgBox.setText(title);
+    msgBox.setInformativeText(informative_text);
+    QPushButton *continueButton =
+        msgBox.addButton(tr("Continue"), QMessageBox::YesRole);
+    QPushButton *closeButton =
+        msgBox.addButton(tr("Close"), QMessageBox::NoRole);
+    msgBox.setDefaultButton(closeButton);
+    msgBox.setEscapeButton(closeButton);
+
+    msgBox.exec();
+
+    if (msgBox.clickedButton() == continueButton) {
+        TogglApi::instance->continueLatestTimeEntry();
+    }
+
+    pomodoro = false;
+}
+
+void MainWindowController::displayPomodoroBreak(
+    const QString title,
+    const QString informative_text) {
+
+    if (pomodoro) {
+        return;
+    }
+    pomodoro = true;
+
+    QMessageBox msgBox;
+    msgBox.setWindowTitle("Pomodoro Break Timer");
+    msgBox.setText(title);
+    msgBox.setInformativeText(informative_text);
+    QPushButton *continueButton =
+        msgBox.addButton(tr("Continue"), QMessageBox::YesRole);
+    QPushButton *closeButton =
+        msgBox.addButton(tr("Close"), QMessageBox::NoRole);
+    msgBox.setDefaultButton(closeButton);
+    msgBox.setEscapeButton(closeButton);
+
+    msgBox.exec();
+
+    if (msgBox.clickedButton() == continueButton) {
+        TogglApi::instance->continueLatestTimeEntry();
+    }
 
     pomodoro = false;
 }
@@ -165,11 +233,12 @@ void MainWindowController::displayReminder(
     }
     reminder = true;
 
-    QMessageBox(
-        QMessageBox::Information,
-        title,
-        informative_text,
-        QMessageBox::Ok).exec();
+    reminderPopup = new QMessageBox(this);
+    reminderPopup->setIcon(QMessageBox::Information);
+    reminderPopup->setWindowTitle("Tracking Reminder");
+    reminderPopup->setText(title);
+    reminderPopup->setInformativeText(informative_text);
+    reminderPopup->exec();
 
     reminder = false;
 }
@@ -186,6 +255,9 @@ void MainWindowController::displayRunningTimerState(
     TimeEntryView *te) {
     tracking = true;
     enableMenuActions();
+    if (reminder) {
+        reminderPopup->close();
+    }
 }
 
 void MainWindowController::displayStoppedTimerState() {
@@ -212,6 +284,51 @@ void MainWindowController::enableMenuActions() {
             setWindowIcon(iconDisabled);
         }
     }
+}
+
+void MainWindowController::showHideHotkeyPressed() {
+    if (this->isVisible()) {
+        if (this->isActiveWindow()) {
+            hide();
+        } else {
+            activateWindow();
+        }
+    } else {
+        onActionShow();
+        activateWindow();
+    }
+}
+
+void MainWindowController::continueStopHotkeyPressed() {
+    if (tracking) {
+        onActionStop();
+    } else {
+        onActionContinue();
+    }
+}
+
+void MainWindowController::updateShowHideShortcut() {
+    showHide->setShortcut(
+        QKeySequence(TogglApi::instance->getShowHideKey()));
+}
+
+void MainWindowController::updateContinueStopShortcut() {
+    continueStop->setShortcut(
+        QKeySequence(TogglApi::instance->getContinueStopKey()));
+}
+
+void MainWindowController::setShortcuts() {
+    showHide = new QxtGlobalShortcut(this);
+    connect(showHide, SIGNAL(activated()),
+            this, SLOT(showHideHotkeyPressed()));
+
+    updateShowHideShortcut();
+
+    continueStop = new QxtGlobalShortcut(this);
+    connect(continueStop, SIGNAL(activated()),
+            this, SLOT(continueStopHotkeyPressed()));
+
+    updateContinueStopShortcut();
 }
 
 void MainWindowController::connectMenuActions() {
@@ -268,7 +385,7 @@ void MainWindowController::connectMenuAction(
 }
 
 void MainWindowController::onActionNew() {
-    TogglApi::instance->start("", "", 0, 0);
+    TogglApi::instance->start("", "", 0, 0, 0, false);
 }
 
 void MainWindowController::onActionContinue() {
@@ -358,7 +475,7 @@ void MainWindowController::closeEvent(QCloseEvent *event) {
 
     QMessageBox::StandardButton dialog;
     dialog = QMessageBox::question(this,
-                                   "Toggl Desktop",
+                                   "Quit Toggl Desktop",
                                    "Really quit the app?",
                                    QMessageBox::Ok | QMessageBox::Cancel);
     if (QMessageBox::Ok == dialog) {
@@ -399,7 +516,7 @@ void MainWindowController::showEvent(QShowEvent *event) {
         return;
     }
     if (script.isEmpty()) {
-        qDebug() << "no script to run";
+        // qDebug() << "no script to run";
         return;
     }
     qDebug() << "will run script: " << script;

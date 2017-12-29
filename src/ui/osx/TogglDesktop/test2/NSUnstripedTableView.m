@@ -47,6 +47,22 @@ extern void *ctx;
 	{
 		[self deleteEntry];
 	}
+	else if (event.keyCode == kVK_RightArrow)
+	{
+		TimeEntryCell *cell = [self getSelectedEntryCell];
+		if (cell != nil && cell.GroupName.length && !cell.GroupOpen)
+		{
+			toggl_toggle_entries_group(ctx, [cell.GroupName UTF8String]);
+		}
+	}
+	else if (event.keyCode == kVK_LeftArrow)
+	{
+		TimeEntryCell *cell = [self getSelectedEntryCell];
+		if (cell != nil && cell.GroupName.length && cell.GroupOpen)
+		{
+			toggl_toggle_entries_group(ctx, [cell.GroupName UTF8String]);
+		}
+	}
 	else
 	{
 		[super keyDown:event];
@@ -78,6 +94,13 @@ extern void *ctx;
 
 	if (cell != nil)
 	{
+		// If description is empty and duration is less than 15 seconds delete without confirmation
+		if (cell.confrimless_delete)
+		{
+			toggl_delete_time_entry(ctx, [cell.GUID UTF8String]);
+			return;
+		}
+
 		NSAlert *alert = [[NSAlert alloc] init];
 		[alert addButtonWithTitle:@"OK"];
 		[alert addButtonWithTitle:@"Cancel"];
